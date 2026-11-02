@@ -8,10 +8,10 @@ x-podman:
   in_pod: false
 
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/securo
-  SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+  DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/securo
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
   DEBUG: ${DEBUG:-false}
-  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+  FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL is required}
   PLUGGY_CLIENT_ID: ${PLUGGY_CLIENT_ID:-}
   PLUGGY_CLIENT_SECRET: ${PLUGGY_CLIENT_SECRET:-}
   PLUGGY_OAUTH_REDIRECT_URI: ${PLUGGY_OAUTH_REDIRECT_URI:-}
@@ -55,7 +55,7 @@ x-backend-env: &backend-env
   AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
   AGENTS_BUILTIN_MCP_URL: ${AGENTS_BUILTIN_MCP_URL:-http://mcp-server:8765/mcp}
   AGENTS_EXTRA_MCP_SERVERS: ${AGENTS_EXTRA_MCP_SERVERS:-}
-  AGENTS_MCP_JWT_SECRET: ${AGENTS_MCP_JWT_SECRET:-dev-mcp-secret-change-in-production}
+  AGENTS_MCP_JWT_SECRET: ${AGENTS_MCP_JWT_SECRET:-}
   # TTL for tokens minted from /agents/connections → "External MCP access".
   # Used by Claude Desktop, n8n, custom clients plugging into Securo.
   AGENTS_MCP_EXTERNAL_TTL_DAYS: ${AGENTS_MCP_EXTERNAL_TTL_DAYS:-90}
@@ -112,7 +112,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: securo
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -125,16 +125,12 @@ services:
   backend:
     <<: *backend-base
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
 
   frontend:
     image: ghcr.io/securo-finance/securo-frontend:latest
-    ports:
-      - "${FRONTEND_PORT:-3000}:8080"
     environment:
       BACKEND_URL: http://backend:8000
-      FRONTEND_URL: http://localhost:3000
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL is required}
     depends_on:
       - backend
     restart: unless-stopped
