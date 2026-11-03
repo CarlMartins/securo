@@ -1,9 +1,19 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { cleanup, screen, waitFor } from '@testing-library/react'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import ReportsPage from '@/pages/reports'
 import { renderWithProviders, t } from '@/test/utils'
 import type { ReportResponse } from '@/types'
+import { saveReportsRange } from '@/lib/remembered-range'
+
+function UrlProbe() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  return <><output data-testid="report-url">{location.search}</output>
+    <button onClick={() => navigate(-1)}>History back</button>
+    <button onClick={() => navigate(1)}>History forward</button></>
+}
 
 const api = vi.hoisted(() => ({
   reports: {
@@ -59,6 +69,60 @@ beforeEach(() => {
 })
 
 afterEach(() => vi.useRealTimers())
+
+describe('Income vs Expenses status and custom date controls', () => {
+  it('requests both statuses by default and keeps the chosen one in the URL', async () => {
+    const { user } = renderWithProviders(<><ReportsPage /><UrlProbe /></>)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5])
+      .toEqual(['posted', 'pending']))
+    const statusTrigger = screen.getByRole('button', { name: /Status: Posted \+ Pending/ })
+    expect(screen.getByTestId('report-tabs')).toContainElement(statusTrigger)
+    await user.click(statusTrigger)
+    await user.click(screen.getByRole('checkbox', { name: /Pending/ }))
+    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
+    expect(screen.getByRole('button', { name: /Status: Posted/ })).toBeInTheDocument()
+    expect(screen.getByTestId('report-url')).toHaveTextContent('statuses=posted')
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['posted']))
+    await user.click(screen.getByRole('button', { name: /Status: Posted/ }))
+    expect(screen.getByRole('checkbox', { name: /Posted/ })).toBeDisabled()
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'History back' }))
+    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'History forward' }))
+    expect(screen.getByRole('button', { name: /Status: Posted/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Status: Posted/ }))
+    await user.click(screen.getByRole('button', { name: t('reports.clearStatus') }))
+    await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
+    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5])
+      .toEqual(['posted', 'pending']))
+  })
+
+  it('restores a bookmarked status on refresh', async () => {
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?statuses=pending' })
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    expect(screen.getByRole('button', { name: /Status: Pending/ })).toBeInTheDocument()
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['pending']))
+  })
+
+  it('shows the shifted custom range that the API receives', async () => {
+    vi.setSystemTime(new Date(2026, 10, 2, 12))
+    saveReportsRange('income_expenses', {
+      rangeKey: 'custom', from: '2026-10-12', to: '2026-11-02', interval: 'monthly', periodOffset: 0,
+    })
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    const custom = screen.getByRole('button', { name: t('reports.customRange') })
+    expect(custom).toHaveTextContent('Oct 12 - Nov 02')
+    await user.click(screen.getByRole('button', { name: 'Previous period' }))
+    expect(custom).toHaveTextContent('Sep 12 - Oct 02')
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
+      .toEqual(['2026-09-12', '2026-10-02']))
+    expect(screen.getByTestId('reports-period-label')).toHaveTextContent('September 2026')
+  })
+})
 
 describe('Reports page — Custom range segment', () => {
   it('loads the Net Worth tab with the 1Y preset by default', async () => {

@@ -1,4 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { loadReportsRange, saveReportsRange, type ReportsRange } from '@/lib/remembered-range'
 import { useTranslation } from 'react-i18next'
 import { useDateLocale, useDisplayLocale } from '@/hooks/use-display-locale'
@@ -19,7 +20,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, HelpCircle, X } from 'lucide-react'
+import { AlertCircle, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Layers, X } from 'lucide-react'
 import { reports } from '@/lib/api'
 import { extractApiError } from '@/lib/api-errors'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -214,6 +215,31 @@ function storedReportsRange(tab: ReportTab): ReportsRange | null {
 }
 
 export default function ReportsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const statusParam = searchParams.get('statuses')
+  const selectedStatuses: ('posted' | 'pending')[] = statusParam === 'posted'
+    ? ['posted']
+    : statusParam === 'pending'
+      ? ['pending']
+      : ['posted', 'pending']
+  const setSelectedStatuses = (statuses: ('posted' | 'pending')[]) => {
+    if (statuses.length === 0) return
+    const next = new URLSearchParams(searchParams)
+    next.set('statuses', statuses.join(','))
+    setSearchParams(next)
+  }
+  const [statusOpen, setStatusOpen] = useState(false)
+  const [draftStatuses, setDraftStatuses] = useState<('posted' | 'pending')[]>(selectedStatuses)
+  const handleStatusOpenChange = (open: boolean) => {
+    if (open) setDraftStatuses(selectedStatuses)
+    setStatusOpen(open)
+  }
+  const toggleDraftStatus = (status: 'posted' | 'pending') => {
+    setDraftStatuses((current) => {
+      if (current.includes(status)) return current.length === 1 ? current : current.filter((value) => value !== status)
+      return (['posted', 'pending'] as const).filter((value) => value === status || current.includes(value))
+    })
+  }
   const timeZone = useEffectiveTimezone()
   // Read through the context object so the page still renders outside a
   // WorkspaceProvider. Mirrors the backend's financial year start (April for
@@ -329,6 +355,7 @@ export default function ReportsPage() {
   // the covered span when the window has been stepped back or is custom, and
   // the preset's own name while the window still ends today.
   const activeWindow = navWindow ?? (hasCustomRange ? { from: customFrom, to: customTo } : null)
+  const displayedCustomRange = isCustomRange && activeWindow ? activeWindow : { from: customFrom, to: customTo }
   const periodLabel =
     isCustomRange && !activeWindow
       ? t('reports.customRange')
@@ -340,6 +367,7 @@ export default function ReportsPage() {
 
   const handleSelectTab = (key: string) => {
     const nextTab = REPORT_TABS.find((tab) => tab.key === key) ?? REPORT_TABS[0]
+    setStatusOpen(false)
     setActiveTab(key)
     setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
@@ -391,8 +419,8 @@ export default function ReportsPage() {
   const activeYear = yearOptions.find(
     (year) =>
       isCustomRange &&
-      customFrom === `${year}-01-01` &&
-      customTo === (year === currentYear ? todayStr : `${year}-12-31`),
+      apiStart === `${year}-01-01` &&
+      apiEnd === (year === currentYear ? todayStr : `${year}-12-31`),
   )
   const handleYearPick = (year: number) => {
     setCustomFrom(`${year}-01-01`)
@@ -403,12 +431,12 @@ export default function ReportsPage() {
   }
 
   const { data, isLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, activeTab === 'income_expenses' ? selectedStatuses.join(',') : null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd)
+          ? reports.incomeExpenses(months, interval, acctIds, period, days, activeTab === 'income_expenses' ? selectedStatuses : undefined, apiStart, apiEnd)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
     enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
@@ -752,8 +780,8 @@ export default function ReportsPage() {
                 <DateRangePicker
                   variant="segment"
                   active={isCustomRange}
-                  from={customFrom}
-                  to={customTo}
+                  from={displayedCustomRange.from}
+                  to={displayedCustomRange.to}
                   defaultFrom={customDefaults.from}
                   defaultTo={customDefaults.to}
                   disallowFuture
@@ -860,31 +888,69 @@ export default function ReportsPage() {
       />
 
       {/* Tab Bar */}
-      <div className="flex items-center gap-1 mb-5 border-b border-border">
-        {REPORT_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => { if (tab.enabled) handleSelectTab(tab.key) }}
-            disabled={!tab.enabled}
-            className={`relative px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === tab.key
-                ? 'text-foreground'
-                : tab.enabled
-                  ? 'text-muted-foreground hover:text-foreground'
-                  : 'text-muted-foreground/50 cursor-not-allowed'
-            }`}
-          >
-            {t(tab.labelKey)}
-            {!tab.enabled && (
-              <span className="ml-1.5 text-[10px] text-muted-foreground/50">
-                {t('reports.comingSoon')}
-              </span>
-            )}
-            {activeTab === tab.key && (
-              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
-            )}
-          </button>
-        ))}
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-b border-border" data-testid="report-tabs">
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          {REPORT_TABS.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => { if (tab.enabled) handleSelectTab(tab.key) }}
+              disabled={!tab.enabled}
+              className={`relative px-4 py-2.5 text-sm font-medium transition-colors ${
+                activeTab === tab.key
+                  ? 'text-foreground'
+                  : tab.enabled
+                    ? 'text-muted-foreground hover:text-foreground'
+                    : 'text-muted-foreground/50 cursor-not-allowed'
+              }`}
+            >
+              {t(tab.labelKey)}
+              {!tab.enabled && (
+                <span className="ml-1.5 text-[10px] text-muted-foreground/50">
+                  {t('reports.comingSoon')}
+                </span>
+              )}
+              {activeTab === tab.key && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+              )}
+            </button>
+          ))}
+        </div>
+        {activeTab === 'income_expenses' && (
+          <Popover open={statusOpen} onOpenChange={handleStatusOpenChange}>
+            <PopoverTrigger asChild>
+              <button type="button" className="mb-1.5 ml-auto flex min-w-44 shrink-0 items-center gap-2 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted/50">
+                <span className="grid size-5 shrink-0 place-items-center rounded-full border border-border text-muted-foreground"><Layers className="size-3" /></span>
+                <span className="flex-1 text-left">{t('reports.transactionStatusShort')}: {selectedStatuses.length === 2
+                  ? t('reports.postedAndPending')
+                  : t(selectedStatuses[0] === 'posted' ? 'reports.postedTransactions' : 'reports.pendingTransactions')}</span>
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-0">
+              <p className="border-b border-border px-3 py-2.5 text-xs font-semibold text-foreground">{t('reports.transactionStatus')}</p>
+              <div className="px-2 py-1.5">
+                {(['posted', 'pending'] as const).map((status) => (
+                  <label key={status} className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-2 hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-primary"
+                      checked={draftStatuses.includes(status)}
+                      disabled={draftStatuses.length === 1 && draftStatuses[0] === status}
+                      onChange={() => toggleDraftStatus(status)}
+                    />
+                    <span><span className="block text-xs font-medium">{t(status === 'posted' ? 'reports.postedTransactions' : 'reports.pendingTransactions')}</span>
+                      <span className="block text-[11px] text-muted-foreground">{t(status === 'posted' ? 'reports.postedDescription' : 'reports.pendingDescription')}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center justify-between border-t border-border px-3 py-2">
+                <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setDraftStatuses(['posted', 'pending'])}>{t('reports.clearStatus')}</button>
+                <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90" onClick={() => { setSelectedStatuses(draftStatuses); setStatusOpen(false) }}>{t('transactions.filtersBar.apply')}</button>
+              </div>
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
 
       {isError && (

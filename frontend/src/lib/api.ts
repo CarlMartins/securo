@@ -1552,6 +1552,7 @@ export const reports = {
     accountIds?: string[],
     period?: 'ytd',
     days?: number,
+    statuses?: readonly ('posted' | 'pending')[],
     startDate?: string,
     endDate?: string,
   ): Promise<ReportResponse> => {
@@ -1559,6 +1560,7 @@ export const reports = {
     const { data } = await api.get('/reports/income-expenses', {
       params: {
         months, interval, period, days,
+        ...(statuses ? { statuses: statuses.join(',') } : {}),
         ...(startDate && endDate ? { start_date: startDate, end_date: endDate } : {}),
         ...(extra.params ?? {}),
       },

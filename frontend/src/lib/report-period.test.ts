@@ -26,6 +26,8 @@ describe('addMonthsIso', () => {
     expect(addMonthsIso('2026-01-31', -1)).toBe('2025-12-31')
     expect(addMonthsIso('2026-03-31', -1)).toBe('2026-02-28')
     expect(addMonthsIso('2024-03-31', -1)).toBe('2024-02-29')
+    expect(addMonthsIso('2026-01-31', 1)).toBe('2026-02-28')
+    expect(addMonthsIso('2024-01-31', 1)).toBe('2024-02-29')
   })
 
   it('rolls across year boundaries', () => {
@@ -184,6 +186,24 @@ describe('periodWindow: custom ranges', () => {
     expect(periodWindow({ kind: 'custom' }, '2026-09-15', -1, range)).toEqual({
       from: '2026-01-10',
       to: '2026-04-20',
+    })
+  })
+
+  it('shifts a cross-month custom span by one month without changing its displayed dates', () => {
+    expect(periodWindow({ kind: 'custom' }, '2026-11-02', -1,
+      { from: '2026-10-12', to: '2026-11-02' })).toEqual({
+      from: '2026-09-12', to: '2026-10-02',
+    })
+  })
+
+  it('clamps custom range month-end dates in regular and leap years', () => {
+    expect(periodWindow({ kind: 'custom' }, '2026-02-28', 1,
+      { from: '2026-01-31', to: '2026-01-31' })).toEqual({
+      from: '2026-02-28', to: '2026-02-28',
+    })
+    expect(periodWindow({ kind: 'custom' }, '2024-02-29', 1,
+      { from: '2024-01-31', to: '2024-01-31' })).toEqual({
+      from: '2024-02-29', to: '2024-02-29',
     })
   })
 

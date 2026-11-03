@@ -5,11 +5,12 @@ aggregation site agrees. Changes to the rule (e.g. adding a new exclusion
 signal) only need to be made here.
 """
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.app_clock import app_today
 from app.models.account import Account
@@ -25,6 +26,87 @@ def is_confirmed():
     has not cleared yet. It says nothing about when the row is dated.
     """
     return Transaction.status == "posted"
+
+
+def report_status_filter(
+    statuses: tuple[str, ...],
+    start_date: date,
+    end_date: date,
+    accounting_mode: str,
+    *,
+    workspace_id: uuid.UUID | None,
+    account_ids: Optional[list[uuid.UUID]] = None,
+    shared_member_ids=None,
+):
+    """Select report statuses, preferring an eligible posted provider twin.
+
+    Account and external ID form a stable provider identity. Different IDs have
+    no reliable link here, so this deliberately makes no fuzzy match. A posted
+    twin replaces a pending row only if it contributes to this report window.
+    The posted-key subquery is uncorrelated so it can be hashed once per
+    aggregate instead of scanning account history for each pending row.
+    """
+    selected = Transaction.status.in_(statuses)
+    if not {"posted", "pending"}.issubset(statuses):
+        return selected
+    if workspace_id is None:
+        raise ValueError("combined-status reports require a workspace")
+    posted = aliased(Transaction)
+    posted_date = reporting_date_col(accounting_mode, posted)
+    posted_eligibility = (
+        counts_as_user_pnl(posted)
+        if shared_member_ids is not None
+        else counts_in_income_expenses_report(posted)
+    )
+    posted_keys = (
+        select(
+            posted.account_id,
+            posted.user_id,
+            posted.workspace_id,
+            posted.external_id,
+        )
+        .where(
+            posted.status == "posted",
+            posted.external_id.is_not(None),
+            posted.source != "opening_balance",
+            posted_date >= start_date,
+            posted_date <= end_date,
+            posted_eligibility,
+        )
+    )
+    if shared_member_ids is None:
+        posted_keys = posted_keys.where(posted.workspace_id == workspace_id)
+        if account_ids is not None:
+            posted_keys = posted_keys.where(posted.account_id.in_(account_ids))
+    else:
+        from app.models.group import GroupMember
+        from app.models.transaction_split import TransactionSplit
+
+        shared_split = aliased(TransactionSplit)
+        shared_workspaces = select(GroupMember.workspace_id).where(
+            GroupMember.id.in_(shared_member_ids)
+        )
+        posted_keys = (
+            posted_keys.join(shared_split, shared_split.transaction_id == posted.id)
+            .where(
+                posted.workspace_id.in_(shared_workspaces),
+                shared_split.group_member_id.in_(shared_member_ids),
+            )
+        )
+    pending_key = tuple_(
+        Transaction.account_id,
+        Transaction.user_id,
+        Transaction.workspace_id,
+        Transaction.external_id,
+    )
+    return and_(
+        selected,
+        or_(
+            Transaction.status != "pending",
+            Transaction.external_id.is_(None),
+            pending_key.not_in(posted_keys),
+        ),
+    )
 
 
 def is_not_future(as_of: date):
@@ -70,7 +152,7 @@ def counts_in_current_balance(as_of: date):
     )
 
 
-def reporting_date_col(accounting_mode: str):
+def reporting_date_col(accounting_mode: str, transaction=Transaction):
     """The date column a transaction should be *bucketed by* in period
     aggregations (dashboard, reports, budgets).
 
@@ -88,11 +170,11 @@ def reporting_date_col(accounting_mode: str):
     #232).
     """
     base = (
-        Transaction.effective_date
+        transaction.effective_date
         if accounting_mode == "accrual"
-        else Transaction.date
+        else transaction.date
     )
-    return func.coalesce(Transaction.effective_bill_date, base)
+    return func.coalesce(transaction.effective_bill_date, base)
 
 
 def is_not_ignored():
@@ -135,7 +217,7 @@ def is_transfer():
     )
 
 
-def counts_as_pnl():
+def counts_as_pnl(transaction=Transaction):
     """SQL filter: True when a transaction should contribute to income/expense totals.
 
     Excludes:
@@ -153,19 +235,19 @@ def counts_as_pnl():
     exclusion family so both rules stay visible at each call site.
     """
     return and_(
-        Transaction.transfer_pair_id.is_(None),
-        Transaction.is_ignored.is_(False),
-        Transaction.exclude_from_pnl.is_(False),
+        transaction.transfer_pair_id.is_(None),
+        transaction.is_ignored.is_(False),
+        transaction.exclude_from_pnl.is_(False),
         # Settlement *debits* are repayments of debts that were already
         # booked as an expense via the share. Counting them would
         # double-count. Settlement *credits*, however, represent the
         # receiver actually getting the cash back — they offset the
         # over-recorded expense from when the receiver paid the full
         # parent transaction. So we keep credits, drop debits.
-        ~and_(Transaction.source == "settlement", Transaction.type == "debit"),
+        ~and_(transaction.source == "settlement", transaction.type == "debit"),
         or_(
-            Transaction.category_id.is_(None),
-            Transaction.category_id.not_in(
+            transaction.category_id.is_(None),
+            transaction.category_id.not_in(
                 select(Category.id).where(
                     or_(
                         Category.treat_as_transfer.is_(True),
@@ -266,7 +348,7 @@ def counts_on_bill(net_payments: bool = False):
     )
 
 
-def counts_as_user_pnl():
+def counts_as_user_pnl(transaction=Transaction):
     """SQL filter for *user-level* P/L (dashboard, reports, budgets).
 
     Stricter than `counts_as_pnl`: also drops settlement *credits*. Under
@@ -276,8 +358,32 @@ def counts_as_user_pnl():
     track real cash through the account, not user P/L.
     """
     return and_(
-        counts_as_pnl(),
-        Transaction.source != "settlement",
+        counts_as_pnl(transaction),
+        transaction.source != "settlement",
+    )
+
+
+def counts_as_investment_contribution(transaction=Transaction):
+    """The investment composition group in Income vs Expenses."""
+    return and_(
+        transaction.type == "debit",
+        transaction.transfer_pair_id.is_(None),
+        transaction.is_ignored.is_(False),
+        transaction.exclude_from_pnl.is_(False),
+        transaction.category_id.in_(
+            select(Category.id).where(
+                Category.treat_as_transfer.is_(True),
+                Category.is_ignored.is_(False),
+            )
+        ),
+    )
+
+
+def counts_in_income_expenses_report(transaction=Transaction):
+    """A row included in either P&L totals or investment composition."""
+    return or_(
+        counts_as_user_pnl(transaction),
+        counts_as_investment_contribution(transaction),
     )
 
 
@@ -384,6 +490,7 @@ async def owner_split_offset_by_category(
     use_effective_date: bool = False,
     primary_currency: Optional[str] = None,
     workspace_id: Optional[uuid.UUID] = None,
+    statuses: tuple[str, ...] = ("posted",),
 ) -> dict:
     """Per-category, sum of non-owner shares on owner-side debit splits —
     subtract from full owner debits to get the owner's category share."""
@@ -425,7 +532,13 @@ async def owner_split_offset_by_category(
             date_col >= month_start,
             date_col < month_end,
             date_col <= app_today(),
-            Transaction.status == "posted",
+            report_status_filter(
+                statuses,
+                month_start,
+                min(month_end - timedelta(days=1), app_today()),
+                "accrual" if use_effective_date else "cash",
+                workspace_id=workspace_id,
+            ),
             counts_as_user_pnl(),
         )
         .group_by(Transaction.category_id, Transaction.currency)
