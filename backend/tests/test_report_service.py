@@ -503,6 +503,14 @@ async def test_income_expenses_api_validation(client, auth_headers):
     )
     assert resp.status_code == 422
 
+    for statuses in ("", "unknown", "posted,unknown", "posted,posted", ",pending"):
+        resp = await client.get(
+            "/api/reports/income-expenses",
+            params={"statuses": statuses},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422
+
     resp = await client.get(
         "/api/reports/income-expenses",
         params={"months": 25},
@@ -517,6 +525,26 @@ async def test_income_expenses_api_validation(client, auth_headers):
     )
     assert resp.status_code == 422
 
+
+@pytest.mark.asyncio
+async def test_income_expenses_api_forwards_selected_statuses(client, auth_headers, monkeypatch):
+    seen = []
+
+    async def fake_report(session, workspace_id, user_id, months, interval, currency, **kwargs):
+        seen.append(kwargs.get("statuses"))
+        return ReportResponse(
+            summary=ReportSummary(primary_value=0, change_amount=0, change_percent=None, breakdowns=[]),
+            trend=[],
+            meta=ReportMeta(type="income_expenses", series_keys=[], currency=currency, interval=interval),
+            composition=[], category_trend=[],
+        )
+
+    monkeypatch.setattr(report_service, "get_income_expenses_report", fake_report)
+    for value in (None, "posted", "pending", "posted,pending"):
+        params = {"statuses": value} if value is not None else {}
+        resp = await client.get("/api/reports/income-expenses", params=params, headers=auth_headers)
+        assert resp.status_code == 200
+    assert seen == [None, ("posted",), ("pending",), ("posted", "pending")]
 
 @pytest.mark.asyncio
 async def test_income_expenses_api_accepts_ytd_period(client, auth_headers, monkeypatch):

@@ -16,9 +16,12 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.user import User
 from app.services._query_filters import (
+    counts_as_investment_contribution,
+    counts_in_income_expenses_report,
     counts_as_pnl,
     counts_as_user_pnl,
     owner_split_offset_by_category,
+    report_status_filter,
     reporting_date_col,
 )
 from app.services.admin_service import get_credit_card_accounting_mode
@@ -489,8 +492,10 @@ async def get_income_expenses_report(
     financial_year_start_month: int = 1,
     start_date: date | None = None,
     end_date: date | None = None,
+    statuses: tuple[str, ...] | None = None,
 ) -> ReportResponse:
     """Build income/expenses; explicit custom windows include actuals only."""
+    selected_statuses = statuses or ("posted",)
     filtered = account_ids is not None
     acct_filter = [Transaction.account_id.in_(account_ids)] if filtered else []
     real_today = app_today()
@@ -509,6 +514,10 @@ async def get_income_expenses_report(
     primary_currency = user.primary_currency if user else get_settings().default_currency
     accounting_mode = await get_credit_card_accounting_mode(session)
     report_date = reporting_date_col(accounting_mode)
+    pnl_status_filter = report_status_filter(
+        selected_statuses, start, axis_end, accounting_mode,
+        workspace_id=workspace_id, account_ids=account_ids,
+    )
 
     label_expr = _interval_label_expr(interval, report_date).label('period')
 
@@ -526,7 +535,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            pnl_status_filter,
             counts_as_user_pnl(),
             *acct_filter,
         )
@@ -534,9 +543,7 @@ async def get_income_expenses_report(
         .order_by(label_expr)
     )
 
-    # Build the actual (posted-only) data map. Forecast rows are kept in a
-    # separate map below so the report can expose the same distinction as
-    # balances: actual income/expenses never silently absorb pending entries.
+    # Build the selected-status data map. Forecast rows stay separate below.
     data_map: dict[str, tuple[float, float]] = {}
     for row in result.all():
         income = float(row[1] or 0)
@@ -586,7 +593,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            pnl_status_filter,
             counts_as_user_pnl(),
         )
         .group_by(label_expr, Transaction.currency)
@@ -624,6 +631,10 @@ async def get_income_expenses_report(
         GroupMember.linked_user_id == user_id,
         GroupMember.is_self.is_(False),
     )
+    shared_status_filter = report_status_filter(
+        selected_statuses, start, axis_end, accounting_mode,
+        workspace_id=workspace_id, shared_member_ids=viewer_member_ids,
+    )
     shared_result = await session.execute(
         select(
             label_expr,
@@ -650,7 +661,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            shared_status_filter,
             counts_as_user_pnl(),
         )
         .group_by(label_expr, Transaction.currency)
@@ -676,10 +687,42 @@ async def get_income_expenses_report(
             existing_expenses + share_expenses_pri,
         )
 
-    # Custom windows report only actuals, including when they end today.
-    # Presets retain their existing full-month estimates.
-    include_forecasts = start_date is None and end_date is None
+    # Custom windows and single-status views report only matching actual rows.
+    # The UI explicitly sends both statuses for its default preset view, which
+    # must retain the existing forecasts of recurring and future transactions.
+    include_forecasts = (
+        start_date is None
+        and end_date is None
+        and (statuses is None or set(statuses) == {"posted", "pending"})
+    )
     forecast_map: dict[str, tuple[float, float]] = {}
+    actual_provider_keys = set()
+    if include_forecasts:
+        actual_key_rows = await session.execute(
+            select(
+                Transaction.account_id,
+                Transaction.user_id,
+                Transaction.workspace_id,
+                Transaction.external_id,
+            )
+            .where(
+                Transaction.workspace_id == workspace_id,
+                Transaction.status.in_(selected_statuses),
+                Transaction.external_id.is_not(None),
+                Transaction.source != "opening_balance",
+                report_date >= start,
+                report_date <= axis_end,
+                counts_in_income_expenses_report(),
+                *acct_filter,
+            )
+            .distinct()
+        )
+        actual_provider_keys = set(actual_key_rows.all())
+
+    def already_counted_provider_twin(tx: Transaction) -> bool:
+        return tx.external_id is not None and (
+            tx.account_id, tx.user_id, tx.workspace_id, tx.external_id
+        ) in actual_provider_keys
 
     # Add recurring projections for each month in the range (consistent with dashboard)
     from app.services.dashboard_service import _month_range, _get_recurring_projections
@@ -709,6 +752,14 @@ async def get_income_expenses_report(
             range_date_col=report_date,
         )
         for tx in forecast_transactions:
+            tx_report_date = (
+                tx.effective_bill_date
+                or (tx.effective_date if accounting_mode == "accrual" else tx.date)
+            )
+            if tx.status in selected_statuses and tx_report_date <= axis_end:
+                continue
+            if already_counted_provider_twin(tx):
+                continue
             if not _counts_as_user_pnl_row(tx):
                 continue
             if tx.amount_primary is not None:
@@ -718,10 +769,6 @@ async def get_income_expenses_report(
                     session, Decimal(str(abs(tx.amount))), tx.currency, primary_currency,
                 )
                 amount = abs(float(converted))
-            tx_report_date = (
-                tx.effective_bill_date
-                or (tx.effective_date if accounting_mode == "accrual" else tx.date)
-            )
             label = _format_date_label(tx_report_date, interval)
             existing_income, existing_expenses = forecast_map.get(label, (0.0, 0.0))
             if tx.type == "credit":
@@ -861,7 +908,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            pnl_status_filter,
             counts_as_user_pnl(),
             *acct_filter,
         )
@@ -892,6 +939,7 @@ async def get_income_expenses_report(
         use_effective_date=accounting_mode == "accrual",
         primary_currency=primary_currency,
         workspace_id=workspace_id,
+        statuses=selected_statuses,
     )
     for cat_uuid, offset_total in full_range_offset.items():
         cat_key = str(cat_uuid) if cat_uuid else "uncategorized"
@@ -923,13 +971,8 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.type == "debit",
-            Transaction.status == "posted",
-            Transaction.transfer_pair_id.is_(None),
-            Transaction.is_ignored.is_(False),
-            Transaction.exclude_from_pnl.is_(False),
-            Category.treat_as_transfer.is_(True),
-            Category.is_ignored.is_(False),
+            pnl_status_filter,
+            counts_as_investment_contribution(),
             *acct_filter,
         )
         .group_by(Category.id, Category.name, Category.color)
@@ -961,7 +1004,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            pnl_status_filter,
             counts_as_user_pnl(),
             *acct_filter,
         )
@@ -1009,7 +1052,7 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
-            Transaction.status == "posted",
+            pnl_status_filter,
             counts_as_user_pnl(),
         )
         .group_by(label_expr, Transaction.category_id, Transaction.currency)
@@ -1095,14 +1138,18 @@ async def get_income_expenses_report(
             range_date_col=report_date,
         )
         for tx in forecast_transactions:
-            if not _counts_as_user_pnl_row(tx):
-                continue
-            cat_id_str = str(tx.category_id) if tx.category_id else "uncategorized"
-            group = "income" if tx.type == "credit" else "expenses"
             tx_report_date = (
                 tx.effective_bill_date
                 or (tx.effective_date if accounting_mode == "accrual" else tx.date)
             )
+            if tx.status in selected_statuses and tx_report_date <= axis_end:
+                continue
+            if already_counted_provider_twin(tx):
+                continue
+            if not _counts_as_user_pnl_row(tx):
+                continue
+            cat_id_str = str(tx.category_id) if tx.category_id else "uncategorized"
+            group = "income" if tx.type == "credit" else "expenses"
             forecast_period_label = _format_date_label(tx_report_date, interval)
             if cat_id_str != "uncategorized" and cat_id_str not in cat_cache:
                 cat_row = await session.execute(

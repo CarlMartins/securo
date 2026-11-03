@@ -38,6 +38,8 @@ interface SankeyNodeDatum {
   name: string
   color: string
   side: 'income' | 'center' | 'expense' | 'investment'
+  categoryKey?: string
+  categoryGroup?: string
 }
 
 interface SankeyLinkDatum {
@@ -64,31 +66,33 @@ function formatMoney(value: number, currency: string, locale: string, compact: b
   }).format(value)
 }
 
-/** Sort largest-first, then fold everything past the cap into a single "Other". */
-function collapse(items: ReportCompositionItem[], otherLabel: string): ReportCompositionItem[] {
+/** Keep the chart compact while retaining its folded categories for drill-down. */
+function collapse(items: ReportCompositionItem[], otherLabel: string) {
   const sorted = [...items].sort((a, b) => b.value - a.value)
-  if (sorted.length <= MAX_NODES_PER_SIDE) return sorted
+  if (sorted.length <= MAX_NODES_PER_SIDE) return { visible: sorted, folded: [] as ReportCompositionItem[] }
   const top = sorted.slice(0, MAX_NODES_PER_SIDE - 1)
   const rest = sorted.slice(MAX_NODES_PER_SIDE - 1)
   const otherValue = rest.reduce((s, c) => s + c.value, 0)
-  return [
-    ...top,
-    { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group },
-  ]
+  return {
+    visible: [...top, { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group }],
+    folded: rest,
+  }
 }
 
 interface CashflowSankeyProps {
   composition: ReportCompositionItem[]
   currency: string
   locale: string
+  onCategoryClick?: (key: string, group: string, label: string) => void
 }
 
-export function CashflowSankey({ composition, currency, locale }: CashflowSankeyProps) {
+export function CashflowSankey({ composition, currency, locale, onCategoryClick }: CashflowSankeyProps) {
   const { t } = useTranslation()
   const { privacyMode, MASK } = usePrivacyMode()
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [hover, setHover] = useState<Hover | null>(null)
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -100,24 +104,28 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
     return () => observer.disconnect()
   }, [])
 
-  const { nodes: rawNodes, links: rawLinks, hasData } = useMemo(() => {
-    const income = collapse(
+  const { nodes: rawNodes, links: rawLinks, hasData, foldedCategories } = useMemo(() => {
+    const incomeGroup = collapse(
       composition.filter((c) => c.group === 'income' && c.value > 0),
       t('reports.other'),
     )
-    const expense = collapse(
+    const expenseGroup = collapse(
       composition.filter((c) => c.group === 'expenses' && c.value > 0),
       t('reports.other'),
     )
     // Investments are a third outflow lane — money set aside, neither spent nor
     // surplus. Treated like Sure's "Investment Contributions" node.
-    const investment = collapse(
+    const investmentGroup = collapse(
       composition.filter((c) => c.group === 'investments' && c.value > 0),
       t('reports.other'),
     )
+    const income = incomeGroup.visible
+    const expense = expenseGroup.visible
+    const investment = investmentGroup.visible
+    const foldedCategories = [...incomeGroup.folded, ...expenseGroup.folded, ...investmentGroup.folded]
 
     if (income.length === 0 && expense.length === 0 && investment.length === 0) {
-      return { nodes: [] as SankeyNodeDatum[], links: [] as SankeyLinkDatum[], hasData: false }
+      return { nodes: [] as SankeyNodeDatum[], links: [] as SankeyLinkDatum[], hasData: false, foldedCategories }
     }
 
     const totalIncome = income.reduce((s, c) => s + c.value, 0)
@@ -148,6 +156,8 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: labelFor(c),
         color: isNeutral(c) ? NEUTRAL_COLOR : INCOME_COLOR,
         side: 'income',
+        categoryKey: c.key,
+        categoryGroup: c.group,
       }),
     )
 
@@ -171,6 +181,8 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: labelFor(c),
         color: isNeutral(c) ? NEUTRAL_COLOR : EXPENSE_COLOR,
         side: 'expense',
+        categoryKey: c.key,
+        categoryGroup: c.group,
       }),
     )
 
@@ -180,6 +192,8 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: c.key === 'other' ? t('reports.other') : c.label,
         color: c.key === 'other' ? NEUTRAL_COLOR : INVEST_COLOR,
         side: 'investment',
+        categoryKey: c.key,
+        categoryGroup: c.group,
       }),
     )
 
@@ -203,7 +217,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
       links.push({ source: centerIdx, target: indexOf.get('surplus')!, value: net })
     }
 
-    return { nodes, links, hasData: true }
+    return { nodes, links, hasData: true, foldedCategories }
   }, [composition, t])
 
   // Tall enough that the busier side's nodes don't crowd; grows with node count.
@@ -368,6 +382,12 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               const y1 = node.y1 ?? 0
               const nodeHeight = Math.max(1, y1 - y0)
               const isCenter = node.id === 'center'
+              const clickable = !!onCategoryClick && !!node.categoryKey
+              const activateNode = () => {
+                if (!clickable) return
+                if (node.categoryKey === 'other') setExpandedGroup(node.categoryGroup ?? null)
+                else onCategoryClick(node.categoryKey!, node.categoryGroup!, node.name)
+              }
               const dimmed = nodeDimmed(i)
               const nodeWidthPx = Math.max(1, x1 - x0)
 
@@ -420,8 +440,22 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               return (
                 <g
                   key={i}
-                  style={{ transition: 'opacity 0.2s ease', opacity: dimmed ? 0.35 : 1 }}
+                  role={clickable ? 'button' : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  aria-label={clickable
+                    ? node.categoryKey === 'other'
+                      ? `${t('common.view')} ${t('reports.category')} · ${node.name}`
+                      : `${t('common.view')} ${t('transactions.title')} · ${node.name}`
+                    : undefined}
+                  style={{ transition: 'opacity 0.2s ease', opacity: dimmed ? 0.35 : 1, cursor: clickable ? 'pointer' : 'default' }}
                   onMouseEnter={() => setHover({ kind: 'node', index: i })}
+                  onClick={activateNode}
+                  onKeyDown={(event) => {
+                    if (clickable && (event.key === 'Enter' || event.key === ' ')) {
+                      event.preventDefault()
+                      activateNode()
+                    }
+                  }}
                 >
                   <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={nodeHeight} fill={node.color} rx={3}>
                     <title>{node.name}: {fmtAmount(node.value ?? 0)}</title>
@@ -449,6 +483,26 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
             })}
           </g>
         </svg>
+      )}
+
+      {onCategoryClick && expandedGroup && foldedCategories.some((category) => category.group === expandedGroup) && (
+        <div className="mt-3 rounded-lg border border-border bg-muted/20 p-3">
+          <div className="mb-2 flex items-center justify-between text-xs font-semibold text-foreground">
+            <span>{t('reports.other')} · {t(`reports.${expandedGroup}`)}</span>
+            <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setExpandedGroup(null)}>
+              {t('common.close')}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {foldedCategories.filter((category) => category.group === expandedGroup).map((category) => (
+              <button key={`${category.group}-${category.key}`} type="button"
+                className="rounded-md border border-border bg-card px-2 py-1 text-xs text-foreground hover:border-primary/50"
+                onClick={() => onCategoryClick(category.key, category.group, category.key === 'uncategorized' ? t('reports.uncategorized') : category.label)}>
+                {category.key === 'uncategorized' ? t('reports.uncategorized') : category.label}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Accessible table fallback — also a non-visual summary of the flows. */}

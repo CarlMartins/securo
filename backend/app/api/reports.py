@@ -144,6 +144,7 @@ async def get_income_expenses(
     days: Optional[int] = Query(None, ge=1, le=730),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
+    statuses: str | None = Query(None, description="Comma-separated transaction statuses: posted,pending"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -159,11 +160,18 @@ async def get_income_expenses(
     _reject_unsupported_fiscal_year_report(
         effective_period, interval, financial_year_start_month
     )
+    selected_statuses: tuple[str, ...] | None = None
+    if statuses is not None:
+        parts = statuses.split(",")
+        if not parts or any(part not in ("posted", "pending") for part in parts) or len(parts) != len(set(parts)):
+            raise HTTPException(status_code=422, detail="statuses must contain posted and/or pending, without duplicates")
+        selected_statuses = tuple(parts)
     return await report_service.get_income_expenses_report(
         session, ctx.workspace.id, ctx.user_id, months, interval, ctx.user.primary_currency,
         account_ids=account_ids, period=effective_period, days=days,
         financial_year_start_month=financial_year_start_month,
         start_date=custom_start, end_date=custom_end,
+        **({"statuses": selected_statuses} if selected_statuses is not None else {}),
     )
 
 

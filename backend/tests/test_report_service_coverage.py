@@ -324,6 +324,30 @@ async def test_income_expenses_with_recurring_projection(session, test_user, tes
     assert "Rent" in labels
 
 
+@pytest.mark.parametrize("statuses", (None, "posted,pending"))
+async def test_income_expenses_api_preserves_default_projection_with_statuses(
+    session, client, auth_headers, test_user, test_workspace, statuses
+):
+    acct = await _make_account(session, test_user.id, "IE API Projection")
+    today = date.today()
+    await _make_recurring(
+        session, test_user.id, acct.id, 800, "debit",
+        frequency="monthly", next_occurrence=today.replace(day=1),
+    )
+
+    params = {"months": 2, "interval": "monthly"}
+    if statuses is not None:
+        params["statuses"] = statuses
+    response = await client.get(
+        "/api/reports/income-expenses", params=params, headers=auth_headers
+    )
+    assert response.status_code == 200
+    report = response.json()
+    breakdowns = {item["key"]: item["value"] for item in report["summary"]["breakdowns"]}
+    assert breakdowns["projectedExpenses"] >= 800
+    assert sum(point["breakdowns"]["projectedExpenses"] for point in report["trend"]) >= 800
+
+
 async def test_income_expenses_pending_is_projected_not_actual(
     session, test_user, test_workspace
 ):
@@ -341,6 +365,293 @@ async def test_income_expenses_pending_is_projected_not_actual(
     bd = {b.key: b.value for b in report.summary.breakdowns}
     assert bd["expenses"] == pytest.approx(100.0)
     assert bd["projectedExpenses"] == pytest.approx(50.0)
+
+
+@pytest.mark.parametrize(
+    ("statuses", "income", "expenses"),
+    [(("posted",), 1000, 200), (("pending",), 300, 50), (("posted", "pending"), 1300, 250)],
+)
+async def test_income_expenses_selected_statuses_consolidate_all_actual_views(
+    session, test_user, test_workspace, statuses, income, expenses
+):
+    acct = await _make_account(session, test_user.id, "IE Statuses")
+    cat_income = await _make_category(session, test_user.id, "Status Income")
+    cat_expense = await _make_category(session, test_user.id, "Status Expense")
+    today = date.today()
+    for amount, kind, status, category in [
+        (1000, "credit", "posted", cat_income),
+        (300, "credit", "pending", cat_income),
+        (200, "debit", "posted", cat_expense),
+        (50, "debit", "pending", cat_expense),
+    ]:
+        await _add_txn(session, test_user.id, acct.id, amount, kind, today,
+                       status=status, category_id=category.id)
+    excluded = await _add_txn(session, test_user.id, acct.id, 900, "debit", today,
+                              status="pending", category_id=cat_expense.id)
+    excluded.is_ignored = True
+    report_excluded = await _add_txn(session, test_user.id, acct.id, 600, "debit", today,
+                                     status="pending", category_id=cat_expense.id)
+    report_excluded.exclude_from_pnl = True
+    transfer = await _add_txn(session, test_user.id, acct.id, 800, "debit", today,
+                              status="pending", category_id=cat_expense.id)
+    transfer.transfer_pair_id = uuid.uuid4()
+    await _add_txn(session, test_user.id, acct.id, 700, "credit", today,
+                   status="pending", source="opening_balance")
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly",
+        statuses=statuses,
+    )
+    breakdowns = {b.key: b.value for b in report.summary.breakdowns}
+    assert breakdowns["income"] == pytest.approx(income)
+    assert breakdowns["expenses"] == pytest.approx(expenses)
+    assert breakdowns["netIncome"] == pytest.approx(income - expenses)
+    assert breakdowns["projectedIncome"] == 0
+    assert breakdowns["projectedExpenses"] == 0
+    point = report.trend[-1]
+    assert point.breakdowns["income"] == pytest.approx(income)
+    assert point.breakdowns["expenses"] == pytest.approx(expenses)
+    assert point.value == pytest.approx(income - expenses)
+    assert sum(c.value for c in report.composition if c.group == "income") == pytest.approx(income)
+    assert sum(c.value for c in report.composition if c.group == "expenses") == pytest.approx(expenses)
+    assert sum(c.total for c in report.category_trend if c.group == "income") == pytest.approx(income)
+    assert sum(c.total for c in report.category_trend if c.group == "expenses") == pytest.approx(expenses)
+
+
+async def test_income_expenses_reconciled_row_counts_once_after_status_change(
+    session, test_user, test_workspace
+):
+    acct = await _make_account(session, test_user.id, "IE Reconciled")
+    tx = await _add_txn(session, test_user.id, acct.id, 75, "debit", date.today(),
+                        status="pending")
+    tx.status = "posted"
+    await session.commit()
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1,
+        statuses=("posted", "pending"),
+    )
+    assert next(b.value for b in report.summary.breakdowns if b.key == "expenses") == pytest.approx(75)
+
+
+async def test_income_expenses_posted_provider_id_wins_over_pending_twin(
+    session, test_user, test_workspace
+):
+    acct = await _make_account(session, test_user.id, "IE Provider Twin")
+    cat = await _make_category(session, test_user.id, "Provider Twin")
+    for status in ("pending", "posted"):
+        tx = await _add_txn(session, test_user.id, acct.id, 75, "debit", date.today(),
+                            status=status, category_id=cat.id, source="sync")
+        tx.external_id = "bank-operation-1"
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1,
+        statuses=("posted", "pending"),
+    )
+    assert next(b.value for b in report.summary.breakdowns if b.key == "expenses") == pytest.approx(75)
+    assert sum(c.value for c in report.composition if c.group == "expenses") == pytest.approx(75)
+    assert sum(c.total for c in report.category_trend if c.group == "expenses") == pytest.approx(75)
+
+
+async def test_income_expenses_future_posted_twin_is_not_projected_twice(
+    session, test_user, test_workspace, monkeypatch
+):
+    from app.services import dashboard_service, report_service
+
+    today = date(2026, 10, 12)
+    monkeypatch.setattr(report_service, "app_today", lambda: today)
+    monkeypatch.setattr(dashboard_service, "app_today", lambda: today)
+    acct = await _make_account(session, test_user.id, "IE Future Provider Twin")
+    cat = await _make_category(session, test_user.id, "Future Provider Twin")
+    pending = await _add_txn(
+        session, test_user.id, acct.id, 75, "debit", today,
+        status="pending", category_id=cat.id, source="sync",
+    )
+    posted = await _add_txn(
+        session, test_user.id, acct.id, 75, "debit", today + timedelta(days=1),
+        status="posted", category_id=cat.id, source="sync",
+    )
+    pending.external_id = posted.external_id = "bank-operation-tomorrow"
+    await _add_txn(
+        session, test_user.id, acct.id, 20, "debit", today + timedelta(days=1),
+        status="posted", category_id=cat.id, source="sync",
+    )
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1,
+        statuses=("posted", "pending"),
+    )
+    breakdowns = {item.key: item.value for item in report.summary.breakdowns}
+    assert breakdowns["expenses"] == pytest.approx(75)
+    assert breakdowns["projectedExpenses"] == pytest.approx(20)
+    assert report.trend[-1].breakdowns["expenses"] == pytest.approx(75)
+    assert report.trend[-1].breakdowns["projectedExpenses"] == pytest.approx(20)
+    assert sum(c.value for c in report.composition if c.group == "expenses") == pytest.approx(95)
+    assert sum(c.total for c in report.category_trend if c.group == "expenses") == pytest.approx(95)
+
+
+@pytest.mark.parametrize(
+    "posted_exclusion",
+    ("excluded_pnl", "ignored", "ignored_category", "opening_balance", "outside_window"),
+)
+async def test_income_expenses_pending_survives_ineligible_posted_twin(
+    session, test_user, test_workspace, posted_exclusion
+):
+    acct = await _make_account(session, test_user.id, "IE Ineligible Provider Twin")
+    cat = await _make_category(session, test_user.id, "Ineligible Provider Twin")
+    today = date.today()
+    pending = await _add_txn(
+        session, test_user.id, acct.id, 75, "debit", today,
+        status="pending", category_id=cat.id, source="sync",
+    )
+    posted = await _add_txn(
+        session, test_user.id, acct.id, 75, "debit", today,
+        status="posted", category_id=cat.id, source="sync",
+    )
+    pending.external_id = posted.external_id = "bank-operation-excluded"
+    if posted_exclusion == "excluded_pnl":
+        posted.exclude_from_pnl = True
+    elif posted_exclusion == "ignored":
+        posted.is_ignored = True
+    elif posted_exclusion == "ignored_category":
+        ignored_cat = await _make_category(session, test_user.id, "Ignored Provider Twin")
+        ignored_cat.is_ignored = True
+        posted.category_id = ignored_cat.id
+    elif posted_exclusion == "opening_balance":
+        posted.source = "opening_balance"
+    else:
+        posted.date = posted.effective_date = today - timedelta(days=8)
+    await session.commit()
+
+    for statuses, expected_expenses in (
+        (("posted",), 0),
+        (("pending",), 75),
+        (("posted", "pending"), 75),
+    ):
+        report = await get_income_expenses_report(
+            session, test_workspace.id, test_user.id, months=1,
+            start_date=today - timedelta(days=7), end_date=today,
+            statuses=statuses,
+        )
+        assert next(b.value for b in report.summary.breakdowns if b.key == "expenses") == pytest.approx(expected_expenses)
+        assert sum(c.value for c in report.composition if c.group == "expenses") == pytest.approx(expected_expenses)
+        assert sum(c.total for c in report.category_trend if c.group == "expenses") == pytest.approx(expected_expenses)
+
+
+@pytest.mark.parametrize("posted_investment", (False, True))
+async def test_income_expenses_posted_twin_reclassified_between_expense_and_investment(
+    session, test_user, test_workspace, posted_investment
+):
+    acct = await _make_account(session, test_user.id, "IE Reclassified Twin")
+    expense_cat = await _make_category(session, test_user.id, "Expense Twin")
+    investment_cat = await _make_category(session, test_user.id, "Investment Twin")
+    investment_cat.treat_as_transfer = True
+    await session.commit()
+    categories = (expense_cat, investment_cat)
+    today = date.today()
+    for status, category in (
+        ("pending", categories[not posted_investment]),
+        ("posted", categories[posted_investment]),
+    ):
+        tx = await _add_txn(
+            session, test_user.id, acct.id, 75, "debit", today,
+            status=status, category_id=category.id, source="sync",
+        )
+        tx.external_id = "bank-operation-reclassified"
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1,
+        start_date=today, end_date=today, statuses=("posted", "pending"),
+    )
+    expected_expenses = 0 if posted_investment else 75
+    expected_investments = 75 if posted_investment else 0
+    assert next(b.value for b in report.summary.breakdowns if b.key == "expenses") == pytest.approx(expected_expenses)
+    assert sum(c.value for c in report.composition if c.group == "expenses") == pytest.approx(expected_expenses)
+    assert sum(c.value for c in report.composition if c.group == "investments") == pytest.approx(expected_investments)
+
+
+@pytest.mark.parametrize(
+    ("posted_member", "expected_share"),
+    ((None, 30), ("other", 30), ("viewer", 40), ("viewer_investment", 30)),
+)
+async def test_income_expenses_shared_pending_kept_until_posted_twin_shares_with_viewer(
+    session, test_user, test_workspace, posted_member, expected_share
+):
+    from app.models.group import Group, GroupMember
+    from app.models.transaction_split import TransactionSplit
+    from app.models.user import User
+    from app.models.workspace import Workspace
+
+    other_user = User(
+        id=uuid.uuid4(), email="shared-owner@example.com", hashed_password="unused",
+        is_active=True, is_superuser=False, is_verified=True,
+        preferences={"currency_display": "BRL"},
+    )
+    other_workspace = Workspace(
+        id=uuid.uuid4(), name="Shared source", kind="personal",
+        created_by_user_id=other_user.id, default_currency="BRL",
+    )
+    session.add_all([other_user, other_workspace])
+    await session.flush()
+    account = Account(
+        id=uuid.uuid4(), user_id=other_user.id, workspace_id=other_workspace.id,
+        name="Shared owner account", type="checking", balance=Decimal("0"), currency="BRL",
+    )
+    group = Group(
+        id=uuid.uuid4(), user_id=other_user.id, workspace_id=other_workspace.id,
+        name="Shared expense", kind="shared", default_currency="BRL",
+    )
+    investment_category = Category(
+        id=uuid.uuid4(), user_id=other_user.id, workspace_id=other_workspace.id,
+        name="Shared investment", icon="tag", color="#123456", is_system=False,
+        treat_as_transfer=True,
+    )
+    session.add_all([account, group, investment_category])
+    await session.flush()
+    viewer = GroupMember(
+        id=uuid.uuid4(), group_id=group.id, workspace_id=other_workspace.id,
+        name="Viewer", linked_user_id=test_user.id, is_self=False,
+    )
+    someone_else = GroupMember(
+        id=uuid.uuid4(), group_id=group.id, workspace_id=other_workspace.id,
+        name="Someone else", is_self=False,
+    )
+    session.add_all([viewer, someone_else])
+    await session.commit()
+
+    today = date.today()
+    pending = await _add_txn(
+        session, other_user.id, account.id, 100, "debit", today,
+        workspace_id=other_workspace.id, status="pending", source="sync",
+    )
+    posted = await _add_txn(
+        session, other_user.id, account.id, 100, "debit", today,
+        workspace_id=other_workspace.id, status="posted", source="sync",
+    )
+    pending.external_id = posted.external_id = "shared-provider-operation"
+    if posted_member == "viewer_investment":
+        posted.category_id = investment_category.id
+    session.add(TransactionSplit(
+        id=uuid.uuid4(), transaction_id=pending.id, workspace_id=other_workspace.id,
+        group_member_id=viewer.id, share_amount=Decimal("30"), share_type="exact",
+    ))
+    if posted_member is not None:
+        session.add(TransactionSplit(
+            id=uuid.uuid4(), transaction_id=posted.id, workspace_id=other_workspace.id,
+            group_member_id=(viewer if posted_member != "other" else someone_else).id,
+            share_amount=Decimal("40"), share_type="exact",
+        ))
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1,
+        statuses=("posted", "pending"),
+    )
+    assert next(b.value for b in report.summary.breakdowns if b.key == "expenses") == pytest.approx(expected_share)
+    assert report.trend[-1].breakdowns["expenses"] == pytest.approx(expected_share)
 
 
 async def test_income_expenses_many_categories_triggers_other_bucket(session, test_user, test_workspace):
