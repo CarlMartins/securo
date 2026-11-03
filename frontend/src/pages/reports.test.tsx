@@ -70,6 +70,13 @@ beforeEach(() => {
 
 afterEach(() => vi.useRealTimers())
 
+async function renderOnNetWorth() {
+  const result = renderWithProviders(<ReportsPage />)
+  await result.user.click(screen.getByRole('button', { name: t('reports.netWorth') }))
+  await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+  return result
+}
+
 describe('Income vs Expenses status and custom date controls', () => {
   it('requests both statuses by default and keeps the chosen one in the URL', async () => {
     const { user } = renderWithProviders(<><ReportsPage /><UrlProbe /></>)
@@ -125,17 +132,21 @@ describe('Income vs Expenses status and custom date controls', () => {
 })
 
 describe('Reports page — Custom range segment', () => {
-  it('loads the Net Worth tab with the 1Y preset by default', async () => {
+  it('opens Income vs Expenses first, followed by Money Map, with the 1Y preset', async () => {
     renderWithProviders(<ReportsPage />)
-
-    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
-    const [, , , , , startDate, endDate] = api.reports.netWorth.mock.calls[0]
+    const tabs = screen.getByTestId('report-tabs')
+    expect(Array.from(tabs.querySelectorAll('button')).slice(0, 2).map((button) => button.textContent))
+      .toEqual([t('reports.incomeExpenses'), t('reports.moneyMap')])
+    expect(screen.getByRole('heading', { name: t('reports.incomeExpenses') })).toBeInTheDocument()
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    const [, , , , , , startDate, endDate] = api.reports.incomeExpenses.mock.calls[0]
     expect(startDate).toBeUndefined()
     expect(endDate).toBeUndefined()
+    expect(api.reports.netWorth).not.toHaveBeenCalled()
   })
 
   it('opening Custom waits for Apply before querying January 1 through today', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalledTimes(1))
 
     await user.click(screen.getByRole('button', { name: t('reports.customRange') }))
@@ -164,7 +175,7 @@ describe('Reports page — Custom range segment', () => {
   })
 
   it('is not offered on the Cash Flow tab', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
 
     await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
@@ -177,7 +188,7 @@ describe('Reports page — Custom range segment', () => {
 
 it.each(['Cancel', 'Escape', 'outside'] as const)(
   '6M → Custom → %s leaves the preset and query unchanged', async (dismiss) => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalledTimes(1))
     const preset = screen.getByRole('button', { name: t('reports.range6m') })
     await user.click(preset)
@@ -206,7 +217,7 @@ it.each([
   ['reports.moneyMap', 'reports.range3m', 3],
 ] as const)('Reset then Apply restores the fallback for %s', async (tab, fallback, months) => {
   const { user } = renderWithProviders(<ReportsPage />)
-  if (tab !== 'reports.netWorth') {
+  if (tab !== 'reports.incomeExpenses') {
     await user.click(screen.getByRole('button', { name: t(tab) }))
   }
   const custom = screen.getByRole('button', { name: t('reports.customRange') })
@@ -264,7 +275,7 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
 
 describe('Reports page — query failure', () => {
   it('surfaces a rejected custom range instead of showing stale numbers', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalledTimes(1))
 
     api.reports.netWorth.mockRejectedValueOnce({
@@ -281,7 +292,7 @@ describe('Reports page — query failure', () => {
   })
 
   it('shows a generic fallback for a network failure and recovers via Retry', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalledTimes(1))
 
     api.reports.netWorth.mockRejectedValueOnce(new Error('network error'))
@@ -296,7 +307,7 @@ describe('Reports page — query failure', () => {
   })
 
   it('recovers by changing the range after a rejected selection', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalledTimes(1))
 
     api.reports.netWorth.mockRejectedValueOnce({ response: { data: { detail: 'end_date must be on or before today' } } })
@@ -315,7 +326,7 @@ describe('Reports page, cash-flow runway', () => {
     const report = emptyReport('cash_flow')
     api.reports.cashFlow.mockResolvedValue({ ...report, meta: { ...report.meta, ...meta } })
     const { user } = renderWithProviders(<ReportsPage />)
-    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
     await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
     return screen.findByTestId('cash-flow-runway')
   }
@@ -395,7 +406,7 @@ describe('Reports page, cash-flow runway', () => {
       ...emptyReport('net_worth'),
       meta: { ...emptyReport('net_worth').meta, lowest_balance: 1, lowest_balance_date: '2026-10-01' },
     })
-    renderWithProviders(<ReportsPage />)
+    await renderOnNetWorth()
     await screen.findAllByText('$1,000.00')
 
     expect(screen.queryByTestId('cash-flow-runway')).not.toBeInTheDocument()
@@ -404,7 +415,7 @@ describe('Reports page, cash-flow runway', () => {
 
 describe('Reports page: month presets and period navigation (issue #519)', () => {
   it('offers This Month and Last Month with exact month windows', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     expect(await screen.findByRole('heading', { name: 'Net Worth' })).toBeInTheDocument()
 
     // The default preset (1Y) keeps the API-anchored window: no explicit dates.
@@ -420,7 +431,7 @@ describe('Reports page: month presets and period navigation (issue #519)', () =>
   })
 
   it('steps the active period back and forward with the arrows', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await screen.findByRole('heading', { name: 'Net Worth' })
     await user.click(screen.getByRole('button', { name: 'This Month' }))
 
@@ -440,7 +451,7 @@ describe('Reports page: month presets and period navigation (issue #519)', () =>
   })
 
   it('steps a macro preset back by a whole window and labels the covered span', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await screen.findByRole('heading', { name: 'Net Worth' })
     await user.click(screen.getByRole('button', { name: '6M' }))
 
@@ -452,7 +463,7 @@ describe('Reports page: month presets and period navigation (issue #519)', () =>
   })
 
   it('does not carry a stepped window into the Cash Flow forecast', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await screen.findByRole('heading', { name: 'Net Worth' })
     await user.click(screen.getByRole('button', { name: '6M' }))
     await user.click(screen.getByRole('button', { name: 'Previous period' }))
@@ -464,7 +475,7 @@ describe('Reports page: month presets and period navigation (issue #519)', () =>
   })
 
   it('hides period navigation on the forward-only Cash Flow tab', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     await screen.findByRole('heading', { name: 'Net Worth' })
     expect(screen.getByRole('button', { name: 'Previous period' })).toBeInTheDocument()
 
@@ -490,7 +501,7 @@ describe('Reports page - year picker (issue #765)', () => {
   })
 
   it('commits the picked past year as a Jan 1 to Dec 31 range', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     const trigger = await screen.findByRole('button', { name: t('reports.year') })
     await user.click(trigger)
     await user.click(await screen.findByRole('button', { name: '2023' }))
@@ -507,7 +518,7 @@ describe('Reports page - year picker (issue #765)', () => {
   })
 
   it('ends the current year at today', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
+    const { user } = await renderOnNetWorth()
     const trigger = await screen.findByRole('button', { name: t('reports.year') })
     await user.click(trigger)
     await user.click(await screen.findByRole('button', { name: '2026' }))
@@ -527,7 +538,7 @@ describe('Reports page - year picker (issue #765)', () => {
 
     api.reports.dataRange.mockResolvedValue({ min_date: '2026-01-05', max_date: '2026-09-12' })
     renderWithProviders(<ReportsPage />)
-    await screen.findByRole('heading', { name: 'Net Worth' })
+    await screen.findByRole('heading', { name: 'Income vs Expenses' })
     expect(screen.queryByRole('button', { name: t('reports.year') })).not.toBeInTheDocument()
   })
 
@@ -538,7 +549,7 @@ describe('Reports page - year picker (issue #765)', () => {
 
     api.reports.dataRange.mockRejectedValue(new Error('network down'))
     renderWithProviders(<ReportsPage />)
-    await screen.findByRole('heading', { name: 'Net Worth' })
+    await screen.findByRole('heading', { name: 'Income vs Expenses' })
     expect(screen.queryByRole('button', { name: t('reports.year') })).not.toBeInTheDocument()
   })
 

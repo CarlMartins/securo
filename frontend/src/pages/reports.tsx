@@ -185,12 +185,17 @@ interface ReportTab {
 
 const REPORT_TABS: ReportTab[] = [
   {
-    key: 'net_worth', labelKey: 'reports.netWorth', enabled: true,
+    key: 'income_expenses', labelKey: 'reports.incomeExpenses', enabled: true,
     rangeOptions: HISTORICAL_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
     supportsCustomRange: true, fallbackRangeKey: '1y', fallbackInterval: 'monthly',
   },
   {
-    key: 'income_expenses', labelKey: 'reports.incomeExpenses', enabled: true,
+    key: 'money_map', labelKey: 'reports.moneyMap', enabled: true,
+    rangeOptions: MONEY_MAP_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
+    supportsCustomRange: true, fallbackRangeKey: '3m', fallbackInterval: 'monthly',
+  },
+  {
+    key: 'net_worth', labelKey: 'reports.netWorth', enabled: true,
     rangeOptions: HISTORICAL_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
     supportsCustomRange: true, fallbackRangeKey: '1y', fallbackInterval: 'monthly',
   },
@@ -198,11 +203,6 @@ const REPORT_TABS: ReportTab[] = [
     key: 'cash_flow', labelKey: 'reports.cashFlow', enabled: true,
     rangeOptions: FORWARD_RANGE_OPTIONS, intervalOptions: CASH_FLOW_INTERVAL_OPTIONS,
     supportsCustomRange: false, fallbackRangeKey: '6m', fallbackInterval: 'daily',
-  },
-  {
-    key: 'money_map', labelKey: 'reports.moneyMap', enabled: true,
-    rangeOptions: MONEY_MAP_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
-    supportsCustomRange: true, fallbackRangeKey: '3m', fallbackInterval: 'monthly',
   },
 ]
 
@@ -289,7 +289,7 @@ export default function ReportsPage() {
   useEffect(() => {
     saveReportsRange(activeTab, { rangeKey, from: customFrom, to: customTo, interval, periodOffset })
   }, [activeTab, rangeKey, customFrom, customTo, interval, periodOffset])
-  const [compositionView, setCompositionView] = useState<string>('netWorth')
+  const [compositionView, setCompositionView] = useState<string>('net')
   const [sparklineView, setSparklineView] = useState<'byExpenses' | 'byIncome'>('byExpenses')
   const [sparklinePage, setSparklinePage] = useState(0)
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
@@ -384,6 +384,7 @@ export default function ReportsPage() {
     setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
     setSelectedDate(null)
+    setDrilldown(null)
     const remembered = storedReportsRange(nextTab)
     if (remembered) {
       setRangeKey(remembered.rangeKey)
@@ -422,7 +423,8 @@ export default function ReportsPage() {
   const todayStr = todayInTimezone(timeZone)
   const drilldownWindow = visibleReportWindow(periodPreset, todayStr, activeWindow)
   const openCategoryTransactions = (key: string, group: string, label: string) => {
-    if (activeTab !== 'income_expenses' || !drilldownWindow || key === 'other') return
+    if (activeTab !== 'income_expenses' && activeTab !== 'money_map') return
+    if (!drilldownWindow || key === 'other') return
     if (group !== 'income' && group !== 'expenses' && group !== 'investments') return
     setDrilldown({
       selection: {
@@ -468,12 +470,12 @@ export default function ReportsPage() {
   }
 
   const { data, isLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, activeTab === 'income_expenses' ? selectedStatuses.join(',') : null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, activeTab === 'income_expenses' || isMoneyMap ? selectedStatuses.join(',') : null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, activeTab === 'income_expenses' ? selectedStatuses : undefined, apiStart, apiEnd)
+          ? reports.incomeExpenses(months, interval, acctIds, period, days, selectedStatuses, apiStart, apiEnd)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
     enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
@@ -956,7 +958,7 @@ export default function ReportsPage() {
             </button>
           ))}
         </div>
-        {activeTab === 'income_expenses' && (
+        {(activeTab === 'income_expenses' || isMoneyMap) && (
           <Popover open={statusOpen} onOpenChange={handleStatusOpenChange}>
             <PopoverTrigger asChild>
               <button type="button" className="mb-1.5 ml-auto flex min-w-44 shrink-0 items-center gap-2 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted/50">
@@ -1132,7 +1134,7 @@ export default function ReportsPage() {
             {isLoading ? (
               <div className="px-2"><Skeleton className="h-[360px] w-full" /></div>
             ) : (
-              <CashflowSankey composition={composition} currency={userCurrency} locale={locale} />
+              <CashflowSankey composition={composition} currency={userCurrency} locale={locale} onCategoryClick={openCategoryTransactions} />
             )}
           </div>
         </div>

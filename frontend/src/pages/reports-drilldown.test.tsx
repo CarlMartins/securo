@@ -35,6 +35,8 @@ vi.mock('@/hooks/use-privacy-mode', () => ({
 
 const marketId = '05956cb7-c035-4da0-b31b-0074ce07cc32'
 const otherId = '64aac812-a06e-4589-b8c3-e0875eef46cf'
+const salaryId = '84f3132e-f3a7-4232-a7e8-6fb2b0d3175b'
+const investmentId = '75c22a38-e0c0-4f3d-bb9b-8b61eb38c4eb'
 
 function report(interval: 'daily' | 'weekly'): ReportResponse {
   const dates = interval === 'weekly'
@@ -80,7 +82,19 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+function showMoneyMap() {
+  const original = HTMLElement.prototype.getBoundingClientRect
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('privacy-sensitive')
+      ? DOMRect.fromRect({ width: 800, height: 400 })
+      : original.call(this)
+  })
+}
 
 describe('Income vs Expenses transaction drilldown', () => {
   it('opens a category trend card with the full report period, category and both statuses', async () => {
@@ -206,5 +220,105 @@ describe('Income vs Expenses transaction drilldown', () => {
       page: 2, category_ids: [marketId], from: '2026-09-12', to: '2026-10-03', status: 'pending',
     })))
     expect(within(dialog).getByText('-$70.00')).toHaveClass('text-rose-500')
+  })
+})
+
+describe('Money Map transaction drilldown', () => {
+  beforeEach(() => {
+    showMoneyMap()
+    saveReportsRange('money_map', {
+      rangeKey: 'custom', from: '2026-09-12', to: '2026-10-03', interval: 'monthly', periodOffset: 0,
+    })
+  })
+
+  it('uses both statuses and opens a real category with the displayed period and type', async () => {
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['posted', 'pending']))
+    const category = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Outros"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.click(category)
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_ids: [otherId], from: '2026-09-12', to: '2026-10-03', type: 'debit',
+    })))
+    expect(api.transactions.list.mock.calls.at(-1)?.[0]).not.toHaveProperty('status')
+    expect(screen.getByRole('dialog')).toHaveTextContent('Transactions · Outros')
+  })
+
+  it('uses the selected pending status when opening a category by keyboard', async () => {
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    await user.click(screen.getByRole('button', { name: /Status: Posted \+ Pending/ }))
+    await user.click(screen.getByRole('checkbox', { name: /Posted/ }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(screen.getByRole('button', { name: /Status: Pending/ })).toBeInTheDocument()
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['pending']))
+    const category = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Mercado"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.keyDown(category, { key: 'Enter' })
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_ids: [marketId], from: '2026-09-12', to: '2026-10-03', type: 'debit', status: 'pending',
+    })))
+  })
+
+  it('keeps income and investment category types when only posted transactions are selected', async () => {
+    const base = report('weekly')
+    api.reports.incomeExpenses.mockResolvedValue({
+      ...base,
+      composition: [
+        ...base.composition,
+        { key: salaryId, label: 'Salary', value: 200, color: '#10B981', group: 'income' },
+        { key: investmentId, label: 'Investments', value: 25, color: '#0EA5E9', group: 'investments' },
+      ],
+    })
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?statuses=posted' })
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['posted']))
+    const income = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Salary"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.click(income)
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_ids: [salaryId], type: 'credit', status: 'posted',
+    })))
+    await user.keyboard('{Escape}')
+    const investment = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Investments"]')
+    expect(investment).not.toBeNull()
+    fireEvent.click(investment!)
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_ids: [investmentId], type: 'debit', status: 'posted',
+    })))
+  })
+
+  it('lets users choose a real category folded into the synthetic Other node', async () => {
+    const base = report('weekly')
+    const extras = Array.from({ length: 8 }, (_, index) => ({
+      key: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      label: `Extra ${index}`,
+      value: 8 - index,
+      color: '#F43F5E',
+      group: 'expenses',
+    }))
+    api.reports.incomeExpenses.mockResolvedValue({ ...base, composition: [...base.composition, ...extras] })
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    const folded = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Category · Other"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.click(folded)
+    await user.click(screen.getByRole('button', { name: 'Extra 7' }))
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_ids: [extras[7].key], from: '2026-09-12', to: '2026-10-03', type: 'debit',
+    })))
   })
 })
