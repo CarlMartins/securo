@@ -28,6 +28,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { PageHeader } from '@/components/page-header'
 import { CashflowSankey } from '@/components/reports/CashflowSankey'
+import { ReportTransactionsDialog } from '@/components/reports/report-transactions-dialog'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
@@ -36,6 +37,12 @@ import { formatCurrency } from '@/lib/format'
 import { localDateString, todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
 import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
+import {
+  reportBarWindow,
+  visibleReportWindow,
+  type ReportTransactionSelection,
+  type ReportTransactionStatus,
+} from '@/lib/report-drilldown'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { WorkspaceContext } from '@/contexts/workspace-context'
 import {
@@ -287,6 +294,11 @@ export default function ReportsPage() {
   const [sparklinePage, setSparklinePage] = useState(0)
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [drilldown, setDrilldown] = useState<{
+    selection: ReportTransactionSelection
+    statuses: ReportTransactionStatus[]
+    accountIds: string[] | null
+  } | null>(null)
   // Active Collection filter (issue #105): scope all report tabs to its
   // accounts; net worth also includes the collection's wallets' assets.
   const { activeAccountIds, activeWalletIds } = useCollectionFilter()
@@ -408,6 +420,31 @@ export default function ReportsPage() {
     staleTime: 5 * 60 * 1000,
   })
   const todayStr = todayInTimezone(timeZone)
+  const drilldownWindow = visibleReportWindow(periodPreset, todayStr, activeWindow)
+  const openCategoryTransactions = (key: string, group: string, label: string) => {
+    if (activeTab !== 'income_expenses' || !drilldownWindow || key === 'other') return
+    if (group !== 'income' && group !== 'expenses' && group !== 'investments') return
+    setDrilldown({
+      selection: {
+        ...drilldownWindow,
+        label,
+        type: group === 'income' ? 'credit' : 'debit',
+        ...(key === 'uncategorized' ? { uncategorized: true } : { categoryId: key }),
+      },
+      statuses: [...selectedStatuses],
+      accountIds: activeAccountIds ? [...activeAccountIds] : null,
+    })
+  }
+  const openBarTransactions = (type: 'credit' | 'debit', label: string | undefined) => {
+    if (activeTab !== 'income_expenses' || !drilldownWindow || !label) return
+    const bucket = reportBarWindow(label, interval, drilldownWindow)
+    if (!bucket) return
+    setDrilldown({
+      selection: { ...bucket, label: t(type === 'credit' ? 'reports.income' : 'reports.expenses'), type },
+      statuses: [...selectedStatuses],
+      accountIds: activeAccountIds ? [...activeAccountIds] : null,
+    })
+  }
   const currentYear = Number(todayStr.slice(0, 4))
   const minYear = dataRange?.min_date ? Number(dataRange.min_date.slice(0, 4)) : null
   const yearOptions =
@@ -643,6 +680,7 @@ export default function ReportsPage() {
         return b.value - a.value
       })
       .map((c) => ({
+        key: c.key,
         name: itemLabel(c),
         value: c.value,
         color: activeTab === 'net_worth' ? (netWorthColorMap.get(c.key) ?? OTHER_SLICE_COLOR) : c.color,
@@ -688,6 +726,8 @@ export default function ReportsPage() {
     for (const item of compositionDetail) byGroup.get(item.group)?.push(item)
 
     const result: {
+      key?: string
+      group?: string
       name: string
       value: number
       color: string
@@ -707,6 +747,7 @@ export default function ReportsPage() {
           result.push(rest[0])
         } else {
           result.push({
+            group: g,
             name: otherLabel(g),
             value: otherValue,
             color: OTHER_SLICE_COLOR,
@@ -1146,7 +1187,7 @@ export default function ReportsPage() {
             </div>
           )}
         </div>
-        <div className="px-1 pb-4" style={{ height: 320 }}>
+        <div className="px-1 pb-4" style={{ height: 320 }} data-testid={activeTab === 'income_expenses' ? 'income-expenses-chart' : undefined}>
           {isLoading ? (
             <div className="px-4">
               <Skeleton className="h-full w-full" />
@@ -1293,8 +1334,12 @@ export default function ReportsPage() {
                   contentStyle={tooltipStyle}
                 />
                 <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="3 3" />
-                  <Bar dataKey="income" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={20} />
-                  <Bar dataKey="expenses" fill="#F43F5E" radius={[4, 4, 0, 0]} maxBarSize={20} />
+                  <Bar dataKey="income" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={20} isAnimationActive={false}
+                    style={{ cursor: 'pointer' }}
+                    onClick={(entry) => openBarTransactions('credit', entry.payload?.date as string | undefined)} />
+                  <Bar dataKey="expenses" fill="#F43F5E" radius={[4, 4, 0, 0]} maxBarSize={20} isAnimationActive={false}
+                    style={{ cursor: 'pointer' }}
+                    onClick={(entry) => openBarTransactions('debit', entry.payload?.date as string | undefined)} />
                   <Bar dataKey="projectedIncome" fill="#34D399" radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
                   <Bar dataKey="projectedExpenses" fill="#FB7185" radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
                 <Line
@@ -1465,9 +1510,14 @@ export default function ReportsPage() {
                                 dataKey="value"
                                 stroke="var(--card)"
                                 strokeWidth={2}
+                                isAnimationActive={false}
+                                onClick={(entry) => {
+                                  if (entry.key && entry.group) openCategoryTransactions(entry.key, entry.group, entry.name)
+                                }}
                               >
                                 {outerDonutData.map((entry, idx) => (
-                                  <Cell key={idx} fill={entry.color} />
+                                  <Cell key={idx} fill={entry.color}
+                                    style={{ cursor: activeTab === 'income_expenses' && entry.key ? 'pointer' : 'default' }} />
                                 ))}
                               </Pie>
                             )}
@@ -1557,12 +1607,16 @@ export default function ReportsPage() {
                           return (
                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
                               {visible.map((d, i) => (
-                                <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
+                                <button key={`${i}-${d.name}`} type="button"
+                                  disabled={activeTab !== 'income_expenses' || !d.key || !d.group}
+                                  onClick={() => { if (d.key && d.group) openCategoryTransactions(d.key, d.group, d.name) }}
+                                  className="flex items-center gap-1.5 disabled:cursor-default enabled:hover:text-primary"
+                                  aria-label={activeTab === 'income_expenses' && d.key ? `${t('common.view')} ${t('transactions.title')} · ${d.name}` : undefined}>
                                   <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                                   <span className="text-[11px] text-muted-foreground whitespace-nowrap">
                                     {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
                                   </span>
-                                </div>
+                                </button>
                               ))}
                               {hiddenCount > 0 && (
                                 <Popover>
@@ -1582,7 +1636,11 @@ export default function ReportsPage() {
                                       {compositionDetail.map((d, i) => {
                                         const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
                                         return (
-                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
+                                          <button key={`${i}-${d.name}`} type="button"
+                                            disabled={activeTab !== 'income_expenses' || !d.key}
+                                            onClick={() => openCategoryTransactions(d.key, d.group, d.name)}
+                                            className="flex w-full items-center gap-2 text-left disabled:cursor-default enabled:hover:text-primary"
+                                            aria-label={activeTab === 'income_expenses' && d.key ? `${t('common.view')} ${t('transactions.title')} · ${d.name}` : undefined}>
                                             <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                                             <span className="text-[11px] text-muted-foreground flex-1 truncate">
                                               {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
@@ -1590,7 +1648,7 @@ export default function ReportsPage() {
                                             <span className="text-xs text-muted-foreground shrink-0">
                                               {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
                                             </span>
-                                          </div>
+                                          </button>
                                         )
                                       })}
                                     </div>
@@ -1720,9 +1778,13 @@ export default function ReportsPage() {
                           const sparkData = item.series.map((s) => ({ date: s.date, v: s.value }))
                           const gradId = `grad-${item.key}-${item.group}-p${pageIdx}`
                           return (
-                            <div
+                            <button
                               key={`${item.key}-${item.group}`}
-                              className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
+                              type="button"
+                              disabled={item.key === 'other'}
+                              onClick={() => openCategoryTransactions(item.key, item.group, item.key === 'uncategorized' ? t('reports.uncategorized') : item.label)}
+                              aria-label={item.key === 'other' ? undefined : `${t('common.view')} ${t('transactions.title')} · ${item.label}`}
+                              className="w-full rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-left enabled:cursor-pointer enabled:hover:border-primary/50 enabled:focus-visible:outline-primary disabled:cursor-default"
                             >
                               <div className="flex items-center gap-1.5 mb-0.5">
                                 <div
@@ -1766,7 +1828,7 @@ export default function ReportsPage() {
                                   </AreaChart>
                                 </ResponsiveContainer>
                               </div>
-                            </div>
+                            </button>
                           )
                         })}
                       </div>
@@ -1907,6 +1969,15 @@ export default function ReportsPage() {
       </>
       )}
       </>
+      )}
+      {drilldown && (
+        <ReportTransactionsDialog
+          key={`${drilldown.selection.from}:${drilldown.selection.to}:${drilldown.selection.categoryId ?? ''}:${drilldown.selection.type}`}
+          selection={drilldown.selection}
+          statuses={drilldown.statuses}
+          accountIds={drilldown.accountIds}
+          onClose={() => setDrilldown(null)}
+        />
       )}
     </div>
   )
