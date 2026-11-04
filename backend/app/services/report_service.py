@@ -280,6 +280,8 @@ def _date_points(
     start: date, end: date, interval: str
 ) -> list[date]:
     """Generate date points between start and end for the given interval."""
+    if start > end:
+        return []
     points: list[date] = []
     current = start
 

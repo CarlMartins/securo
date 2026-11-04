@@ -36,6 +36,14 @@ export function visibleReportWindow(
   return { from: `${year}-${String(fiscalStart).padStart(2, '0')}-01`, to: today }
 }
 
+/** Keep transaction drilldowns inside the dates included in a historical report. */
+export function historicalReportWindow(
+  window: PeriodWindow | null, today: string,
+): PeriodWindow | null {
+  if (!window || window.from > today) return null
+  return { ...window, to: window.to > today ? today : window.to }
+}
+
 /** Convert the chart's daily/ISO-week/month/year label into dates inside the report. */
 export function reportBarWindow(
   label: string,

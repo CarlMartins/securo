@@ -26,6 +26,7 @@ from app.models.bank_connection import BankConnection
 from app.models.category import Category
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
+from app.api.reports import _resolve_custom_range
 from app.services.report_service import (
     _get_baseline_projection,
     _net_worth_at,
@@ -227,6 +228,36 @@ async def test_income_expenses_basic_structure(session, test_user, test_workspac
     assert "income" in groups
     for ct in report.category_trend:
         assert len(ct.series) == len(report.trend)
+
+
+async def test_income_expenses_custom_range_ignores_future_rows(
+    session, test_user, test_workspace,
+):
+    today = date.today()
+    account = await _make_account(session, test_user.id, "Future custom range")
+    await _add_txn(session, test_user.id, account.id, 100, "credit", today)
+    await _add_txn(session, test_user.id, account.id, 900, "credit", today + timedelta(days=1))
+
+    start, end = _resolve_custom_range(
+        today, today + timedelta(days=7), allow_future_end=True,
+    )
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id,
+        start_date=start, end_date=end, interval="daily",
+    )
+    assert report.summary.primary_value == 100
+    assert [point.date for point in report.trend] == [today.isoformat()]
+
+    start, end = _resolve_custom_range(
+        today + timedelta(days=1), today + timedelta(days=7), allow_future_end=True,
+    )
+    future_only = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id,
+        start_date=start, end_date=end, interval="monthly",
+    )
+    assert future_only.summary.primary_value == 0
+    assert future_only.trend == []
+    assert future_only.composition == []
 
 
 async def test_income_expenses_empty_data(session, test_user, test_workspace):
