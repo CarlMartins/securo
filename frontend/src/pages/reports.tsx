@@ -40,6 +40,7 @@ import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-peri
 import {
   reportBarWindow,
   visibleReportWindow,
+  historicalReportWindow,
   type ReportTransactionSelection,
   type ReportTransactionStatus,
 } from '@/lib/report-drilldown'
@@ -221,6 +222,17 @@ function storedReportsRange(tab: ReportTab): ReportsRange | null {
   return { ...stored, interval, ...(isCustom ? {} : { from: '', to: '' }) }
 }
 
+/** Net Worth only accepts custom dates through the workspace's current day. */
+function rangeForTab(tab: ReportTab, range: ReportsRange, today: string): ReportsRange {
+  if (tab.key !== 'net_worth' || range.rangeKey !== CUSTOM_RANGE_KEY || range.to <= today) {
+    return range
+  }
+  if (range.from > today) {
+    return { ...range, rangeKey: tab.fallbackRangeKey, from: '', to: '', periodOffset: 0 }
+  }
+  return { ...range, to: today, periodOffset: 0 }
+}
+
 export default function ReportsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const statusParam = searchParams.get('statuses')
@@ -337,11 +349,12 @@ export default function ReportsPage() {
         : selectedRange.days
           ? { kind: 'days', days: selectedRange.days }
           : { kind: 'rolling', months: selectedRange.months }
+  const todayStr = todayInTimezone(timeZone)
   // Cash Flow is a forward projection with no period navigation: it never
   // takes a stepped window, even if an offset was carried over from another tab.
   const navWindow = isCashFlow
     ? null
-    : periodWindow(periodPreset, todayInTimezone(timeZone), periodOffset, { from: customFrom, to: customTo })
+    : periodWindow(periodPreset, todayStr, periodOffset, { from: customFrom, to: customTo })
   // In custom mode, translate the picked span into an equivalent `months`
   // value so downstream logic (interval bucketing, forecast fan-out) keeps
   // working. Backend uses start_date/end_date directly when they're set.
@@ -387,12 +400,13 @@ export default function ReportsPage() {
     setDrilldown(null)
     const remembered = storedReportsRange(nextTab)
     if (remembered) {
-      setRangeKey(remembered.rangeKey)
-      setInterval(remembered.interval)
-      setPeriodOffset(nextTab.key === 'cash_flow' ? 0 : (remembered.periodOffset ?? 0))
+      const nextRange = rangeForTab(nextTab, remembered, todayStr)
+      setRangeKey(nextRange.rangeKey)
+      setInterval(nextRange.interval)
+      setPeriodOffset(nextTab.key === 'cash_flow' ? 0 : (nextRange.periodOffset ?? 0))
       if (remembered.rangeKey === CUSTOM_RANGE_KEY) {
-        setCustomFrom(remembered.from)
-        setCustomTo(remembered.to)
+        setCustomFrom(nextRange.from)
+        setCustomTo(nextRange.to)
       }
       return
     }
@@ -400,12 +414,15 @@ export default function ReportsPage() {
     const stillValid =
       (rangeKey === CUSTOM_RANGE_KEY && nextTab.supportsCustomRange) ||
       nextTab.rangeOptions.some((r) => r.key === rangeKey)
-    if (!stillValid) {
-      setRangeKey(nextTab.fallbackRangeKey)
-      setPeriodOffset(0)
-    } else if (nextTab.key === 'cash_flow') {
-      setPeriodOffset(0)
-    }
+    const carried = rangeForTab(nextTab, {
+      rangeKey: stillValid ? rangeKey : nextTab.fallbackRangeKey,
+      from: customFrom, to: customTo, interval,
+      periodOffset: stillValid && nextTab.key !== 'cash_flow' ? periodOffset : 0,
+    }, todayStr)
+    setRangeKey(carried.rangeKey)
+    setCustomFrom(carried.from)
+    setCustomTo(carried.to)
+    setPeriodOffset(carried.periodOffset ?? 0)
     if (!nextTab.intervalOptions.some((i) => i.value === interval)) {
       setInterval(nextTab.fallbackInterval)
     }
@@ -420,8 +437,10 @@ export default function ReportsPage() {
     queryFn: reports.dataRange,
     staleTime: 5 * 60 * 1000,
   })
-  const todayStr = todayInTimezone(timeZone)
-  const drilldownWindow = visibleReportWindow(periodPreset, todayStr, activeWindow)
+  const selectedDrilldownWindow = visibleReportWindow(periodPreset, todayStr, activeWindow)
+  const drilldownWindow = activeTab === 'income_expenses' || isMoneyMap
+    ? historicalReportWindow(selectedDrilldownWindow, todayStr)
+    : selectedDrilldownWindow
   const openCategoryTransactions = (key: string, group: string, label: string) => {
     if (activeTab !== 'income_expenses' && activeTab !== 'money_map') return
     if (!drilldownWindow || key === 'other') return
@@ -827,7 +846,7 @@ export default function ReportsPage() {
                   to={displayedCustomRange.to}
                   defaultFrom={customDefaults.from}
                   defaultTo={customDefaults.to}
-                  disallowFuture
+                  disallowFuture={activeTab === 'net_worth'}
                   maxRangeYears={CUSTOM_RANGE_MAX_YEARS}
                   onChange={(f, to) => {
                     setCustomFrom(f)

@@ -23,8 +23,11 @@ def _add_years(value: date, years: int) -> date:
     """Add whole calendar years to a date.
 
     Clamps Feb 29 to Feb 28 when the target year isn't a leap year, so the
-    result is always a valid calendar date rather than raising.
+    result is always a valid calendar date rather than raising. If the target
+    year exceeds the calendar's maximum, cap it at the last representable day.
     """
+    if value.year + years > date.max.year:
+        return date.max
     try:
         return value.replace(year=value.year + years)
     except ValueError:
@@ -47,14 +50,14 @@ def _reject_unsupported_fiscal_year_report(
 
 
 def _resolve_custom_range(
-    start_date: date | None, end_date: date | None
+    start_date: date | None, end_date: date | None, *, allow_future_end: bool = False
 ) -> tuple[date | None, date | None]:
     """Validate a user-supplied custom range and return the (start, end) pair.
 
     Both endpoints must be provided together; the range must be non-empty,
-    end no later than today and stay within :data:`_MAX_CUSTOM_RANGE_YEARS`
-    calendar years of start_date. Returns ``(None, None)`` when neither is
-    set, so callers can use presets.
+    stay within :data:`_MAX_CUSTOM_RANGE_YEARS` calendar years of start_date.
+    Income/expenses can accept a future end, but only actual dates through
+    today reach the report. Returns ``(None, None)`` for presets.
     """
     if start_date is None and end_date is None:
         return None, None
@@ -68,12 +71,9 @@ def _resolve_custom_range(
             status_code=422,
             detail="end_date must be on or after start_date",
         )
-    # The app's calendar, not the host clock: the workspace's request runs
-    # on its own timezone (see the `current_workspace` dependency), and the
-    # service below builds the same window from `app_today()`. Comparing
-    # against a different calendar would reject the workspace's own today
-    # or accept a date the workspace has not reached yet.
-    if end_date > app_today():
+    # Use the workspace's calendar for both validation and the report cutoff.
+    today = app_today()
+    if end_date > today and not allow_future_end:
         raise HTTPException(
             status_code=422,
             detail="end_date must be on or before today",
@@ -86,7 +86,9 @@ def _resolve_custom_range(
                 f"Custom range is too wide (max {_MAX_CUSTOM_RANGE_YEARS} years)"
             ),
         )
-    return start_date, end_date
+    # The workspace's calendar is also the service's cutoff. Keep the picked
+    # start even when it is future-only: an empty historical range is valid.
+    return start_date, min(end_date, today) if allow_future_end else end_date
 
 
 @router.get("/data-range", response_model=ReportDataRange)
@@ -151,11 +153,13 @@ async def get_income_expenses(
     """`days` overrides `months` with an exact rolling window ending today.
 
     Alternatively `start_date`/`end_date` (both required together) pin the
-    window to an explicit historical calendar range, overriding `months`,
-    `period`, and `days`. Custom ranges include actuals only, without estimates.
+    window to an explicit calendar range, overriding `months`, `period`, and
+    `days`. A future end is accepted but clipped to the workspace's today;
+    a range entirely in the future returns no actuals. Custom ranges include
+    actuals only, without estimates.
     """
     financial_year_start_month = _financial_year_start_month(ctx.workspace.tax_jurisdiction)
-    custom_start, custom_end = _resolve_custom_range(start_date, end_date)
+    custom_start, custom_end = _resolve_custom_range(start_date, end_date, allow_future_end=True)
     effective_period = None if custom_start is not None else period
     _reject_unsupported_fiscal_year_report(
         effective_period, interval, financial_year_start_month

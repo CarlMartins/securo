@@ -183,6 +183,59 @@ describe('Reports page — Custom range segment', () => {
     await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
     expect(screen.queryByRole('button', { name: t('reports.customRange') })).not.toBeInTheDocument()
   })
+
+  it.each(['income_expenses', 'money_map'] as const)(
+    'allows a future end date on %s and sends the selected range', async (tab) => {
+      saveReportsRange(tab, {
+        rangeKey: 'custom', from: '2026-09-01', to: '2026-09-20',
+        interval: 'monthly', periodOffset: 0,
+      })
+      const { user } = renderWithProviders(<ReportsPage />)
+      if (tab === 'money_map') {
+        await user.click(screen.getByRole('button', { name: t('reports.moneyMap') }))
+      }
+      await user.click(screen.getByRole('button', { name: t('reports.customRange') }))
+      const apply = screen.getByRole('button', { name: t('transactions.filtersBar.apply') })
+      expect(apply).toBeEnabled()
+      await user.click(apply)
+      await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
+        .toEqual(['2026-09-01', '2026-09-20']))
+    },
+  )
+
+  it.each(['income_expenses', 'money_map'] as const)(
+    'clips a carried future end before switching from %s to Net Worth', async (tab) => {
+      saveReportsRange(tab, {
+        rangeKey: 'custom', from: '2026-09-01', to: '2026-09-20',
+        interval: 'monthly', periodOffset: 0,
+      })
+      const { user } = renderWithProviders(<ReportsPage />)
+      if (tab === 'money_map') {
+        await user.click(screen.getByRole('button', { name: t('reports.moneyMap') }))
+      }
+      await user.click(screen.getByRole('button', { name: t('reports.customRange') }))
+      await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
+      await user.click(screen.getByRole('button', { name: t('reports.netWorth') }))
+
+      await waitFor(() => expect(api.reports.netWorth.mock.calls.at(-1)?.slice(-2))
+        .toEqual(['2026-09-01', '2026-09-12']))
+    },
+  )
+
+  it('uses the Net Worth preset when a carried custom range starts in the future', async () => {
+    saveReportsRange('income_expenses', {
+      rangeKey: 'custom', from: '2026-09-15', to: '2026-09-20',
+      interval: 'monthly', periodOffset: 0,
+    })
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.customRange') }))
+    await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
+    await user.click(screen.getByRole('button', { name: t('reports.netWorth') }))
+
+    await waitFor(() => expect(api.reports.netWorth.mock.calls.at(-1)?.slice(-2))
+      .toEqual([undefined, undefined]))
+    expect(screen.getByRole('button', { name: t('reports.range1y') })).toHaveClass('bg-primary')
+  })
 })
 
 

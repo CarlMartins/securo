@@ -150,11 +150,12 @@ def test_date_points_yearly():
 
 
 def test_date_points_empty_range():
-    """Start after end returns single point."""
+    """A single-day range has one point; a future-only window has none."""
     start = date(2025, 1, 1)
     end = date(2025, 1, 1)
     points = _date_points(start, end, "daily")
     assert len(points) == 1
+    assert _date_points(end + timedelta(days=1), end, "monthly") == []
 
 
 def test_date_points_unknown_interval_defaults_to_monthly():
@@ -2838,6 +2839,35 @@ def test_add_years_clamps_leap_day():
     # Target year is also a leap year, so Feb 29 survives untouched.
     assert _add_years(date(2020, 2, 29), 4) == date(2024, 2, 29)
     assert _add_years(date(2016, 9, 12), 10) == date(2026, 9, 12)
+    assert _add_years(date(9990, 1, 1), 10) == date.max
+
+
+async def test_income_expenses_api_accepts_far_future_custom_range(
+    client, auth_headers, monkeypatch,
+):
+    from app.api import reports as reports_api
+
+    monkeypatch.setattr(reports_api, 'app_today', lambda: date(2026, 9, 12))
+    report = ReportResponse(
+        summary=ReportSummary(primary_value=0, change_amount=0, change_percent=None,
+                              breakdowns=[]),
+        trend=[], meta=ReportMeta(type='income_expenses', series_keys=[],
+                                  currency='USD', interval='monthly'),
+        composition=[], category_trend=[],
+    )
+    service = AsyncMock(return_value=report)
+    monkeypatch.setattr(report_service, 'get_income_expenses_report', service)
+
+    response = await client.get(
+        '/api/reports/income-expenses',
+        params={'start_date': '9990-01-01', 'end_date': '9990-01-01'},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    service.assert_awaited_once()
+    assert service.call_args.kwargs['start_date'] == date(9990, 1, 1)
+    assert service.call_args.kwargs['end_date'] == date(2026, 9, 12)
 
 
 @pytest.mark.parametrize('endpoint,service_name', [
@@ -2849,7 +2879,7 @@ def test_add_years_clamps_leap_day():
     # 10-calendar-year anniversary. One day further back crosses it, even
     # though the day-count difference (3653 vs. 3652) understates the effect
     # of the two leap days (2020, 2024) inside the window.
-    (-1, 1, 422), (0, 0, 200), (-3652, 0, 200), (-3653, 0, 422),
+    (-1, 1, 200), (1, 2, 200), (0, 0, 200), (-3652, 0, 200), (-3653, 0, 422),
     (None, 0, 422), (-1, None, 422), (0, -1, 422),
 ])
 async def test_historical_api_custom_range_boundaries(
@@ -2881,11 +2911,14 @@ async def test_historical_api_custom_range_boundaries(
         if offset is not None:
             params[name] = (FixedDate.today() + timedelta(days=offset)).isoformat()
     response = await client.get(f'/api/reports/{endpoint}', params=params, headers=auth_headers)
+    if endpoint == 'net-worth' and end_offset is not None and end_offset > 0:
+        status = 422
     assert response.status_code == status, response.text
     if status == 200:
         service.assert_awaited_once()
         assert service.call_args.kwargs['start_date'].isoformat() == params['start_date']
-        assert service.call_args.kwargs['end_date'].isoformat() == params['end_date']
+        expected_end = min(params['end_date'], FixedDate.today().isoformat()) if endpoint == 'income-expenses' else params['end_date']
+        assert service.call_args.kwargs['end_date'].isoformat() == expected_end
     else:
         service.assert_not_awaited()
         assert isinstance(response.json()['detail'], str)
@@ -2951,11 +2984,14 @@ def test_custom_range_accepts_end_date_that_is_app_today():
         assert _resolve_custom_range(start, end) == (start, end)
 
 
-def test_custom_range_rejects_end_date_after_app_today():
+def test_custom_range_clamps_future_end_to_app_today_for_income_expenses():
     host_today = date.today()
     # The workspace runs one day behind the host clock: the host's today
-    # is still in the future for the workspace, so it is not a valid end.
+    # is still in the future for the workspace, so it is ignored by the report.
     with patch("app.api.reports.app_today", return_value=host_today - timedelta(days=1)):
+        assert _resolve_custom_range(
+            host_today - timedelta(days=1), host_today, allow_future_end=True
+        ) == (host_today - timedelta(days=1), host_today - timedelta(days=1))
         with pytest.raises(HTTPException) as exc:
             _resolve_custom_range(host_today - timedelta(days=1), host_today)
         assert exc.value.detail == "end_date must be on or before today"
@@ -2985,8 +3021,11 @@ def test_custom_range_guard_follows_resolved_timezone():
             start = zone_today - timedelta(days=7)
             assert _resolve_custom_range(start, zone_today) == (start, zone_today)
         else:
-            # Workspace behind the host: the host's today is a future date
-            # for the workspace and must be rejected.
+            # Workspace behind the host: the host's today is future for this
+            # workspace and must be left out of income/expenses.
+            assert _resolve_custom_range(
+                zone_today, host_today, allow_future_end=True
+            ) == (zone_today, zone_today)
             with pytest.raises(HTTPException) as exc:
                 _resolve_custom_range(zone_today, host_today)
             assert exc.value.detail == "end_date must be on or before today"

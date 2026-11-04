@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   reportBarWindow,
+  historicalReportWindow,
   reportTransactionFilters,
   reportTransactionsLink,
   visibleReportWindow,
@@ -15,6 +16,13 @@ describe('Income vs Expenses transaction drilldown', () => {
       .toEqual({ from: '2026-10-05', to: '2026-11-03' })
     expect(visibleReportWindow({ kind: 'ytd', fyStartMonth: 4 }, '2026-11-03', null))
       .toEqual({ from: '2026-04-01', to: '2026-11-03' })
+  })
+
+  it('limits a future custom range to today for transaction drilldowns', () => {
+    expect(historicalReportWindow({ from: '2026-09-01', to: '2026-09-20' }, '2026-09-12'))
+      .toEqual({ from: '2026-09-01', to: '2026-09-12' })
+    expect(historicalReportWindow({ from: '2026-09-13', to: '2026-09-20' }, '2026-09-12'))
+      .toBeNull()
   })
 
   it('clips ISO week, day, month, and year bars to the report window', () => {
