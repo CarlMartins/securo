@@ -22,13 +22,14 @@ const api = vi.hoisted(() => ({
     cashFlow: vi.fn(),
     dataRange: vi.fn(),
   },
+  accounts: { list: vi.fn() },
   // The page reads the workspace timezone to tell a balance that is already
   // negative from one that crosses later. Unresolved here, which lands on the
   // browser's own day.
   timezones: { list: vi.fn().mockResolvedValue({ timezones: [], default: null }) },
 }))
 
-vi.mock('@/lib/api', () => ({ reports: api.reports, timezones: api.timezones }))
+vi.mock('@/lib/api', () => ({ accounts: api.accounts, reports: api.reports, timezones: api.timezones }))
 
 vi.mock('@/hooks/use-display-locale', () => ({
   useDisplayLocale: () => 'en-US',
@@ -64,6 +65,7 @@ beforeEach(() => {
   api.reports.netWorth.mockResolvedValue(emptyReport('net_worth'))
   api.reports.incomeExpenses.mockResolvedValue(emptyReport('income_expenses'))
   api.reports.cashFlow.mockResolvedValue(emptyReport('cash_flow'))
+  api.accounts.list.mockResolvedValue([])
   // No data by default: the year picker stays hidden unless a test opts in.
   api.reports.dataRange.mockResolvedValue({ min_date: null, max_date: null })
 })
@@ -83,26 +85,26 @@ describe('Income vs Expenses status and custom date controls', () => {
     await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5])
       .toEqual(['posted', 'pending']))
-    const statusTrigger = screen.getByRole('button', { name: /Status: Posted \+ Pending/ })
-    expect(screen.getByTestId('report-tabs')).toContainElement(statusTrigger)
-    await user.click(statusTrigger)
+    const filtersTrigger = screen.getByRole('button', { name: 'Filters' })
+    expect(screen.getByTestId('report-tabs')).toContainElement(filtersTrigger)
+    await user.click(filtersTrigger)
     await user.click(screen.getByRole('checkbox', { name: /Pending/ }))
-    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
-    expect(screen.getByRole('button', { name: /Status: Posted/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('Status: Posted')
     expect(screen.getByTestId('report-url')).toHaveTextContent('statuses=posted')
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['posted']))
-    await user.click(screen.getByRole('button', { name: /Status: Posted/ }))
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
     expect(screen.getByRole('checkbox', { name: /Posted/ })).toBeDisabled()
     await user.keyboard('{Escape}')
     await user.click(screen.getByRole('button', { name: 'History back' }))
-    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'History forward' }))
-    expect(screen.getByRole('button', { name: /Status: Posted/ })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Status: Posted/ }))
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveTextContent('1')
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
     await user.click(screen.getByRole('button', { name: t('reports.clearStatus') }))
     await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
-    expect(screen.getByRole('button', { name: /Status: Posted \+ Pending/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toBeInTheDocument()
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5])
       .toEqual(['posted', 'pending']))
   })
@@ -110,8 +112,36 @@ describe('Income vs Expenses status and custom date controls', () => {
   it('restores a bookmarked status on refresh', async () => {
     const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?statuses=pending' })
     await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
-    expect(screen.getByRole('button', { name: /Status: Pending/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveTextContent('1')
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['pending']))
+  })
+
+  it('applies selected accounts to both reports and restores them from the URL', async () => {
+    api.accounts.list.mockResolvedValue([
+      { id: 'account-1', name: 'Checking', display_name: null, masked_number: '1234' },
+      { id: 'account-2', name: 'Checking', display_name: null, masked_number: '5678' },
+    ])
+    const { user } = renderWithProviders(<><ReportsPage /><UrlProbe /></>)
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
+    const firstAccount = await screen.findByRole('checkbox', { name: 'Checking •••• 1234' })
+    expect(screen.getByRole('checkbox', { name: 'Checking •••• 5678' })).not.toBeChecked()
+    await user.click(firstAccount)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('Accounts: 1 selected')
+    expect(screen.getByTestId('report-url')).toHaveTextContent('account_id=account-1')
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[2]).toEqual(['account-1']))
+    const callCount = api.reports.incomeExpenses.mock.calls.length
+    await user.click(screen.getByRole('button', { name: t('reports.moneyMap') }))
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalledTimes(callCount + 1))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[2]).toEqual(['account-1']))
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(screen.getByRole('checkbox', { name: 'Checking •••• 1234' })).toBeChecked()
+    await user.click(screen.getByRole('button', { name: t('reports.clearStatus') }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(screen.getByTestId('report-url')).not.toHaveTextContent('account_id=')
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[2]).toBeUndefined())
+    await user.click(screen.getByRole('button', { name: 'History back' }))
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveTextContent('1')
   })
 
   it('shows the shifted custom range that the API receives', async () => {

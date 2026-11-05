@@ -97,6 +97,18 @@ function showMoneyMap() {
 }
 
 describe('Income vs Expenses transaction drilldown', () => {
+  it('passes the account filter to the dialog and Transactions link', async () => {
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?account_id=account-1&statuses=posted' })
+    const cards = await screen.findAllByRole('button', { name: 'View Transactions · Mercado' })
+    await user.click(cards.at(-1)!)
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      account_ids: ['account-1'], status: 'posted', category_ids: [marketId],
+    })))
+    expect(screen.getByRole('link', { name: 'View Transactions' })).toHaveAttribute(
+      'href', expect.stringContaining('account_id=account-1'),
+    )
+  })
+
   it('opens a category trend card with the full report period, category and both statuses', async () => {
     const { user } = renderWithProviders(<ReportsPage />)
     await user.click(screen.getByRole('button', { name: 'Income vs Expenses' }))
@@ -248,13 +260,30 @@ describe('Money Map transaction drilldown', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('Transactions · Outros')
   })
 
+  it('passes the selected account to a category drilldown', async () => {
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?account_id=account-1' })
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    const category = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Outros"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.click(category)
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      account_ids: ['account-1'], category_ids: [otherId],
+    })))
+    expect(screen.getByRole('link', { name: 'View Transactions' })).toHaveAttribute(
+      'href', expect.stringContaining('account_id=account-1'),
+    )
+  })
+
   it('uses the selected pending status when opening a category by keyboard', async () => {
     const { user } = renderWithProviders(<ReportsPage />)
     await user.click(screen.getByRole('button', { name: 'Money Map' }))
-    await user.click(screen.getByRole('button', { name: /Status: Posted \+ Pending/ }))
+    await user.click(screen.getByRole('button', { name: 'Filters' }))
     await user.click(screen.getByRole('checkbox', { name: /Posted/ }))
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    expect(screen.getByRole('button', { name: /Status: Pending/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveTextContent('1')
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[5]).toEqual(['pending']))
     const category = await waitFor(() => {
       const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Mercado"]')

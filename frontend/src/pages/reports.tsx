@@ -20,8 +20,9 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
-import { AlertCircle, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, Layers, X } from 'lucide-react'
-import { reports } from '@/lib/api'
+import { AlertCircle, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, HelpCircle, ListFilter, X } from 'lucide-react'
+import { accounts, reports } from '@/lib/api'
+import { getAccountLabel, sortAccountsByDisplayName } from '@/lib/account-utils'
 import { extractApiError } from '@/lib/api-errors'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
@@ -241,17 +242,25 @@ export default function ReportsPage() {
     : statusParam === 'pending'
       ? ['pending']
       : ['posted', 'pending']
-  const setSelectedStatuses = (statuses: ('posted' | 'pending')[]) => {
+  const selectedAccountIds = searchParams.get('account_id')?.split(',').filter(Boolean) ?? []
+  const applyFilters = (statuses: ('posted' | 'pending')[], accountIds: string[]) => {
     if (statuses.length === 0) return
     const next = new URLSearchParams(searchParams)
-    next.set('statuses', statuses.join(','))
+    if (statuses.length === 2) next.delete('statuses')
+    else next.set('statuses', statuses[0])
+    if (accountIds.length) next.set('account_id', accountIds.join(','))
+    else next.delete('account_id')
     setSearchParams(next)
   }
-  const [statusOpen, setStatusOpen] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [draftStatuses, setDraftStatuses] = useState<('posted' | 'pending')[]>(selectedStatuses)
-  const handleStatusOpenChange = (open: boolean) => {
-    if (open) setDraftStatuses(selectedStatuses)
-    setStatusOpen(open)
+  const [draftAccountIds, setDraftAccountIds] = useState<string[]>(selectedAccountIds)
+  const handleFiltersOpenChange = (open: boolean) => {
+    if (open) {
+      setDraftStatuses(selectedStatuses)
+      setDraftAccountIds(selectedAccountIds)
+    }
+    setFiltersOpen(open)
   }
   const toggleDraftStatus = (status: 'posted' | 'pending') => {
     setDraftStatuses((current) => {
@@ -315,11 +324,33 @@ export default function ReportsPage() {
   // accounts; net worth also includes the collection's wallets' assets.
   const { activeAccountIds, activeWalletIds } = useCollectionFilter()
   const acctIds = activeAccountIds ?? undefined
+  const reportAccountIds = selectedAccountIds.length
+    ? activeAccountIds === null
+      ? selectedAccountIds
+      : selectedAccountIds.filter((id) => activeAccountIds.includes(id))
+    : acctIds
   const walletIds = activeWalletIds ?? undefined
   // Wallet-only collection (active, zero accounts): the account-based reports
   // (income/expenses, cash flow) have no data — only net worth (which includes
   // the wallets' assets) is meaningful.
   const noAccounts = activeAccountIds !== null && activeAccountIds.length === 0
+  const noReportAccounts = (activeAccountIds !== null || selectedAccountIds.length > 0) && reportAccountIds?.length === 0
+  const { data: accountList = [] } = useQuery({
+    queryKey: ['accounts', 'all'],
+    queryFn: () => accounts.list(true),
+    staleTime: 60_000,
+  })
+  const selectableAccounts = sortAccountsByDisplayName(
+    activeAccountIds === null ? accountList : accountList.filter((account) => activeAccountIds.includes(account.id)),
+  )
+  const activeFilterDescription = [
+    selectedStatuses.length === 1
+      ? `${t('reports.transactionStatusShort')}: ${t(selectedStatuses[0] === 'posted' ? 'reports.postedTransactions' : 'reports.pendingTransactions')}`
+      : null,
+    selectedAccountIds.length
+      ? `${t('reports.accounts')}: ${t('transactions.filtersBar.nSelected', { count: selectedAccountIds.length })}`
+      : null,
+  ].filter(Boolean).join('; ')
 
   const currentTab = REPORT_TABS.find((tab) => tab.key === activeTab) ?? REPORT_TABS[0]
 
@@ -392,7 +423,7 @@ export default function ReportsPage() {
 
   const handleSelectTab = (key: string) => {
     const nextTab = REPORT_TABS.find((tab) => tab.key === key) ?? REPORT_TABS[0]
-    setStatusOpen(false)
+    setFiltersOpen(false)
     setActiveTab(key)
     setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
@@ -453,7 +484,7 @@ export default function ReportsPage() {
         ...(key === 'uncategorized' ? { uncategorized: true } : { categoryId: key }),
       },
       statuses: [...selectedStatuses],
-      accountIds: activeAccountIds ? [...activeAccountIds] : null,
+      accountIds: reportAccountIds ? [...reportAccountIds] : null,
     })
   }
   const openBarTransactions = (type: 'credit' | 'debit', label: string | undefined) => {
@@ -463,7 +494,7 @@ export default function ReportsPage() {
     setDrilldown({
       selection: { ...bucket, label: t(type === 'credit' ? 'reports.income' : 'reports.expenses'), type },
       statuses: [...selectedStatuses],
-      accountIds: activeAccountIds ? [...activeAccountIds] : null,
+      accountIds: reportAccountIds ? [...reportAccountIds] : null,
     })
   }
   const currentYear = Number(todayStr.slice(0, 4))
@@ -489,15 +520,15 @@ export default function ReportsPage() {
   }
 
   const { data, isLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, activeTab === 'income_expenses' || isMoneyMap ? selectedStatuses.join(',') : null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeTab === 'income_expenses' || isMoneyMap ? reportAccountIds : activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, activeTab === 'income_expenses' || isMoneyMap ? selectedStatuses.join(',') : null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, selectedStatuses, apiStart, apiEnd)
+          ? reports.incomeExpenses(months, interval, reportAccountIds, period, days, selectedStatuses, apiStart, apiEnd)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
-    enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
+    enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && !((activeTab === 'income_expenses' || isMoneyMap) && noReportAccounts) && (!isCustomRange || hasCustomRange),
   })
 
   const summary = data?.summary
@@ -978,17 +1009,21 @@ export default function ReportsPage() {
           ))}
         </div>
         {(activeTab === 'income_expenses' || isMoneyMap) && (
-          <Popover open={statusOpen} onOpenChange={handleStatusOpenChange}>
+          <Popover open={filtersOpen} onOpenChange={handleFiltersOpenChange}>
             <PopoverTrigger asChild>
-              <button type="button" className="mb-1.5 ml-auto flex min-w-44 shrink-0 items-center gap-2 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted/50">
-                <span className="grid size-5 shrink-0 place-items-center rounded-full border border-border text-muted-foreground"><Layers className="size-3" /></span>
-                <span className="flex-1 text-left">{t('reports.transactionStatusShort')}: {selectedStatuses.length === 2
-                  ? t('reports.postedAndPending')
-                  : t(selectedStatuses[0] === 'posted' ? 'reports.postedTransactions' : 'reports.pendingTransactions')}</span>
+              <button type="button" aria-describedby={activeFilterDescription ? 'report-active-filters' : undefined} className="mb-1.5 ml-auto flex shrink-0 items-center gap-2 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted/50">
+                <span className="grid size-5 shrink-0 place-items-center rounded-full border border-border text-muted-foreground"><ListFilter className="size-3" /></span>
+                <span>{t('transactions.filtersBar.filters')}</span>
+                {(selectedStatuses.length === 1 || selectedAccountIds.length > 0) && (
+                  <span aria-hidden="true" className="grid size-4 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">
+                    {Number(selectedStatuses.length === 1) + Number(selectedAccountIds.length > 0)}
+                  </span>
+                )}
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-64 p-0">
+            {activeFilterDescription && <span id="report-active-filters" className="sr-only">{activeFilterDescription}</span>}
+            <PopoverContent align="end" className="w-72 p-0">
               <p className="border-b border-border px-3 py-2.5 text-xs font-semibold text-foreground">{t('reports.transactionStatus')}</p>
               <div className="px-2 py-1.5">
                 {(['posted', 'pending'] as const).map((status) => (
@@ -1006,9 +1041,25 @@ export default function ReportsPage() {
                   </label>
                 ))}
               </div>
+              <div className="border-t border-border px-3 py-2.5 text-xs font-semibold text-foreground">{t('reports.accounts')}</div>
+              <div className="max-h-48 overflow-y-auto px-2 pb-1.5">
+                {selectableAccounts.length ? selectableAccounts.map((account) => (
+                  <label key={account.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 text-xs hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      className="accent-primary"
+                      checked={draftAccountIds.includes(account.id)}
+                      onChange={() => setDraftAccountIds((current) => current.includes(account.id)
+                        ? current.filter((id) => id !== account.id)
+                        : [...current, account.id])}
+                    />
+                    <span className="truncate">{getAccountLabel(account)}</span>
+                  </label>
+                )) : <p className="px-1 py-2 text-xs text-muted-foreground">{t('transactions.filtersBar.noOptions')}</p>}
+              </div>
               <div className="flex items-center justify-between border-t border-border px-3 py-2">
-                <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setDraftStatuses(['posted', 'pending'])}>{t('reports.clearStatus')}</button>
-                <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90" onClick={() => { setSelectedStatuses(draftStatuses); setStatusOpen(false) }}>{t('transactions.filtersBar.apply')}</button>
+                <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => { setDraftStatuses(['posted', 'pending']); setDraftAccountIds([]) }}>{t('reports.clearStatus')}</button>
+                <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90" onClick={() => { applyFilters(draftStatuses, draftAccountIds); setFiltersOpen(false) }}>{t('transactions.filtersBar.apply')}</button>
               </div>
             </PopoverContent>
           </Popover>
