@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { accounts, transactions } from '@/lib/api'
+import { getAccountName } from '@/lib/account-utils'
 import { extractApiError } from '@/lib/api-errors'
 import { formatDate, formatDateRange } from '@/lib/date-range-format'
 import { formatCurrency } from '@/lib/format'
@@ -42,7 +43,7 @@ export function ReportTransactionsDialog({ selection, statuses, accountIds, onCl
     queryFn: () => accounts.list(true),
     staleTime: 60_000,
   })
-  const accountNames = new Map(accountList?.map((account) => [account.id, account.name]) ?? [])
+  const accountNames = new Map(accountList?.map((account) => [account.id, getAccountName(account)]) ?? [])
   const pages = Math.max(1, Math.ceil((data?.total ?? 0) / filters.limit))
   const statusLabel = statuses.length === 2
     ? t('reports.postedAndPending')
