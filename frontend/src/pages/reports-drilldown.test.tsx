@@ -197,7 +197,7 @@ describe('Income vs Expenses transaction drilldown', () => {
   })
 
   it('shows transaction details and paginates using the same filters', async () => {
-    api.accounts.list.mockResolvedValue([{ id: 'account-1', name: 'Checking' }])
+    api.accounts.list.mockResolvedValue([{ id: 'account-1', name: 'Checking', display_name: 'Daily Account' }])
     api.transactions.list.mockImplementation(async ({ page }: { page: number }) => ({
       items: page === 1 ? [{
         id: 'transaction-1', account_id: 'account-1', description: 'Supermarket',
@@ -223,7 +223,8 @@ describe('Income vs Expenses transaction drilldown', () => {
       .toHaveAttribute('title', 'Groceries for the entire week, including fresh produce and household supplies')
     expect(within(dialog).getByText('−$45.00')).toHaveClass('text-rose-500')
     expect(within(dialog).getByText('-$70.00')).toHaveClass('text-rose-500')
-    expect(within(dialog).getByText(/Checking/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Daily Account/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Checking/)).not.toBeInTheDocument()
     expect(within(dialog).getByText('21 Transactions')).toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: 'View Transactions' }))
       .toHaveAttribute('href', expect.stringContaining('status=pending'))
@@ -241,6 +242,40 @@ describe('Money Map transaction drilldown', () => {
     saveReportsRange('money_map', {
       rangeKey: 'custom', from: '2026-09-12', to: '2026-10-03', interval: 'monthly', periodOffset: 0,
     })
+  })
+
+  it('shows display names and falls back to account names when needed', async () => {
+    api.accounts.list.mockResolvedValue([
+      { id: 'account-1', name: 'Checking', display_name: 'Daily Account' },
+      { id: 'account-2', name: 'Savings', display_name: null },
+    ])
+    api.transactions.list.mockResolvedValue({
+      items: [
+        {
+          id: 'transaction-1', account_id: 'account-1', description: 'Supermarket',
+          category: { name: 'Outros' }, amount: 45, currency: 'USD',
+          date: '2026-09-14', type: 'debit', status: 'posted',
+        },
+        {
+          id: 'transaction-2', account_id: 'account-2', description: 'Utilities',
+          category: { name: 'Outros' }, amount: 25, currency: 'USD',
+          date: '2026-09-14', type: 'debit', status: 'posted',
+        },
+      ],
+      total: 2, page: 1, limit: 20,
+    })
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: 'Money Map' }))
+    const category = await waitFor(() => {
+      const node = document.querySelector<SVGGElement>('g[role="button"][aria-label="View Transactions · Outros"]')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    fireEvent.click(category)
+    const dialog = screen.getByRole('dialog')
+    expect(await within(dialog).findByText(/Daily Account/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Savings/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Checking/)).not.toBeInTheDocument()
   })
 
   it('uses both statuses and opens a real category with the displayed period and type', async () => {
