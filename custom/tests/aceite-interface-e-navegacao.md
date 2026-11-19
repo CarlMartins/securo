@@ -17,7 +17,7 @@
 | UI-05 | Ativar nó de categoria no **Money Map** por clique/Enter/Espaço | Mesmo modal compartilhado | Alvo acessível e contexto correto |
 | UI-06 | Ativar “Outros” sintético no Money Map | Seletor de categorias ocultas | Seleção de categoria individual leva ao modal; “Outros” real abre diretamente |
 | UI-07 | Abrir modal de **receitas** com privacidade ligada/desligada | Valor ou máscara na linha e no resumo | Crédito verde, número não vaza ao mascarar |
-| UI-08 | Abrir modal de **despesas** com privacidade ligada/desligada | Valor ou máscara na linha e no resumo | Débito vermelho, sinal correto |
+| UI-08 | Abrir modal de **despesas** com privacidade ligada/desligada | Valor ou máscara na linha e no resumo | Débito em vermelho mais intenso nos temas claro e escuro, com sinal correto |
 | UI-09 | Renderizar modal com 2+ linhas | Título, contexto, linhas agrupadas, barra de resumo, contagem, CTA | Sem substituição por lista genérica; responsivo |
 | UI-10 | Acionar **Ver transações** no modal | URL/rota e DOM da **página nativa**: toolbar, busca, filtros e listagem padrão | Não pode abrir “página de contribuições” simplificada |
 | UI-11 | Inspecionar filtros depois de UI-10 | Filtros nativos aplicados (categoria, tipo, contas, status, intervalo, exclusões pertinentes) | Consulta e chips/filtros representam seleção real |

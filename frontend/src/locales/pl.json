@@ -2258,6 +2258,17 @@
     "propertyEquity": "Wartość {{value}} · Dług {{debt}} · Kapitał własny {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Status transakcji"
+    },
+    "drilldown": {
+      "observed": "Rzeczywiste",
+      "projected": "Prognoza",
+      "total": "Razem",
+      "context": "Kwoty ujęte w raporcie",
+      "missingFx_one": "{{count}} transakcja bez kursu wymiany",
+      "missingFx_other": "Transakcje bez kursu wymiany ({{count}})"
+    },
     "section": "Analityka",
     "netWorth": "Majątek netto",
     "trend": "W czasie",

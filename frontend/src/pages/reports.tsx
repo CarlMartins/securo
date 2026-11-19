@@ -1,5 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { loadReportsRange, saveReportsRange, type ReportsRange } from '@/lib/remembered-range'
+import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useDateLocale, useDisplayLocale } from '@/hooks/use-display-locale'
 import { useQuery } from '@tanstack/react-query'
@@ -18,6 +19,7 @@ import {
   Legend,
   ReferenceLine,
   Rectangle,
+  Sector,
   ResponsiveContainer,
   type BarShapeProps,
 } from 'recharts'
@@ -32,6 +34,13 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { PageHeader } from '@/components/page-header'
 import { CashflowSankey } from '@/components/reports/CashflowSankey'
+import { ReportFilters } from '@/components/reports/ReportFilters'
+import { ReportTransactionsDialog } from '@/components/reports/ReportTransactionsDialog'
+import { formatDateRange } from '@/lib/date-range-format'
+import {
+  REPORT_STATUSES, reportChartAction, reportGroup, reportPointRange,
+  type ReportSelection, type ReportStatus,
+} from '@/lib/report-selection'
 import { IncomeExpenseStatement, StatementControls } from '@/components/reports/IncomeExpenseStatement'
 import { loadStatementSettings, saveStatementSettings, type StatementSettings } from '@/lib/category-statement'
 import { currentMonth } from '@/lib/month-utils'
@@ -41,7 +50,7 @@ import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import type { ReportResponse, CategoryTrendItem } from '@/types'
 import { formatCompactCurrency, formatCurrency } from '@/lib/format'
 import { cashFlowBar, cashFlowTopSeries } from '@/lib/cash-flow-bars'
-import { localDateString, todayInTimezone } from '@/lib/date-utils'
+import { todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
 import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
@@ -154,12 +163,6 @@ const CUSTOM_RANGE_KEY = 'custom'
 // count, so leap days inside the window can't push the cap past 10 years.
 const CUSTOM_RANGE_MAX_YEARS = 10
 
-// Seed a historical draft from January 1 through today; Apply commits it.
-function defaultCustomRange(): { from: string; to: string } {
-  const today = new Date()
-  return { from: `${today.getFullYear()}-01-01`, to: localDateString(today) }
-}
-
 interface ReportTab {
   key: string
   labelKey: string
@@ -219,6 +222,8 @@ function storedReportsRange(tab: ReportTab): ReportsRange | null {
 
 export default function ReportsPage() {
   const timeZone = useEffectiveTimezone()
+  const todayStr = todayInTimezone(timeZone)
+  const customDefaults = { from: `${todayStr.slice(0, 4)}-01-01`, to: todayStr }
   // Read through the context object so the page still renders outside a
   // WorkspaceProvider. Mirrors the backend's financial year start (April for
   // India, January elsewhere), so stepping back from YTD lands on whole
@@ -228,13 +233,12 @@ export default function ReportsPage() {
   const { t } = useTranslation()
   const { mask, privacyMode, MASK } = usePrivacyMode()
   const { user } = useAuth()
-  const userCurrency = user?.preferences?.currency_display ?? 'USD'
+  const preferredCurrency = user?.preferences?.currency_display ?? 'USD'
   const locale = useDisplayLocale()
   // Month and day words follow the app language, not the currency locale: a
   // Portuguese UI showing US dollars still reads "Setembro de 2026".
   const dateLocale = useDateLocale()
 
-  const customDefaults = defaultCustomRange()
   // The reports this person keeps, in their order (all four by default).
   const reportsLayout = useLayout('reports')
   const { openLibrary } = useLibrary()
@@ -274,6 +278,9 @@ export default function ReportsPage() {
   const [sparklinePage, setSparklinePage] = useState(0)
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [selection, setSelection] = useState<ReportSelection | null>(null)
+  const dialogTrigger = useRef<Element | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [statementMonth, setStatementMonth] = useState(currentMonth)
   const [statementSettings, setStatementSettings] = useState(loadStatementSettings)
   const updateStatementSettings = (next: StatementSettings) => {
@@ -296,6 +303,26 @@ export default function ReportsPage() {
   // The Money Map (Sankey) tab is driven by the same income/expenses
   // composition, aggregated over the selected historical range.
   const isMoneyMap = activeTab === 'money_map'
+  const hasReportFilters = activeTab === 'income_expenses' || isMoneyMap
+  const rawStatus = searchParams.get('statuses')
+  const statuses: ReportStatus[] = rawStatus === 'posted' || rawStatus === 'pending'
+    ? [rawStatus] : REPORT_STATUSES
+  const selectedAccounts = [...new Set((searchParams.get('account_id') ?? '').split(',').filter(Boolean))]
+  const reportAccountIds = selectedAccounts.length
+    ? selectedAccounts.filter((id) => acctIds === undefined || acctIds.includes(id))
+    : acctIds
+  const emptyReportScope = hasReportFilters && reportAccountIds?.length === 0
+  const applyReportFilters = (nextStatuses: ReportStatus[], nextAccounts: string[]) => {
+    setSelectedDate(null)
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      if (nextStatuses.length === 1) next.set('statuses', nextStatuses[0])
+      else next.delete('statuses')
+      if (nextAccounts.length) next.set('account_id', nextAccounts.join(','))
+      else next.delete('account_id')
+      return next
+    })
+  }
   const isStatement = activeTab === 'statement'
   const rangeOptions = currentTab.rangeOptions
   // Cash flow's forecast presets don't make sense with a past-only calendar
@@ -323,7 +350,7 @@ export default function ReportsPage() {
   // takes a stepped window, even if an offset was carried over from another tab.
   const navWindow = isCashFlow
     ? null
-    : periodWindow(periodPreset, todayInTimezone(timeZone), periodOffset, { from: customFrom, to: customTo })
+    : periodWindow(periodPreset, todayStr, periodOffset, { from: customFrom, to: customTo })
   // In custom mode, translate the picked span into an equivalent `months`
   // value so downstream logic (interval bucketing, forecast fan-out) keeps
   // working. Backend uses start_date/end_date directly when they're set.
@@ -355,7 +382,9 @@ export default function ReportsPage() {
       : activeWindow && selectedRange.monthAnchor !== undefined
         ? monthLabel(activeWindow.from.slice(0, 7), dateLocale)
         : activeWindow
-          ? `${formatShortMonth(activeWindow.from, dateLocale)} - ${formatShortMonth(activeWindow.to, dateLocale)}`
+          ? hasReportFilters && isCustomRange
+            ? formatDateRange(activeWindow.from, activeWindow.to, dateLocale)
+            : `${formatShortMonth(activeWindow.from, dateLocale)} - ${formatShortMonth(activeWindow.to, dateLocale)}`
           : t(`reports.${RANGE_LABELS[selectedRange.key]}`)
 
   const handleSelectTab = (key: string) => {
@@ -374,6 +403,16 @@ export default function ReportsPage() {
         setCustomTo(remembered.to)
       }
       return
+    }
+    if (nextTab.key === 'net_worth' && hasCustomRange && activeWindow) {
+      if (activeWindow.from > todayStr) {
+        setRangeKey(nextTab.fallbackRangeKey)
+        setPeriodOffset(0)
+      } else if (activeWindow.to > todayStr) {
+        setCustomFrom(activeWindow.from)
+        setCustomTo(todayStr)
+        setPeriodOffset(0)
+      }
     }
     // Clamp the range/interval preset to what the new tab supports.
     const stillValid =
@@ -417,7 +456,6 @@ export default function ReportsPage() {
     queryFn: reports.dataRange,
     staleTime: 5 * 60 * 1000,
   })
-  const todayStr = todayInTimezone(timeZone)
   const currentYear = Number(todayStr.slice(0, 4))
   const minYear = dataRange?.min_date ? Number(dataRange.min_date.slice(0, 4)) : null
   const yearOptions =
@@ -441,15 +479,15 @@ export default function ReportsPage() {
   }
 
   const { data, isLoading: reportLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, hasReportFilters ? [reportAccountIds, statuses] : null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd)
+          ? reports.incomeExpenses(months, interval, reportAccountIds, period, days, statuses, apiStart, apiEnd)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
-    enabled: currentTab.enabled && reportsLayout.ready && activeShown && !isStatement && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
+    enabled: currentTab.enabled && reportsLayout.ready && activeShown && !isStatement && !emptyReportScope && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
   })
 
   // Waiting on the saved list of reports counts as loading, not as an empty report.
@@ -458,6 +496,50 @@ export default function ReportsPage() {
   const summary = data?.summary
   const trend = data?.trend ?? []
   const meta = data?.meta
+  const userCurrency = hasReportFilters ? meta?.currency ?? preferredCurrency : preferredCurrency
+  const reportWindow = meta?.observed_from && meta.observed_to && meta.observed_from <= meta.observed_to
+    ? { from: meta.observed_from, to: meta.observed_to }
+    : null
+  const openSelection = (
+    group: string,
+    label: string,
+    options: { category?: string; point?: string; projected?: number; trigger?: Element | null } = {},
+  ) => {
+    const kind = reportGroup(group)
+    if (!kind || !reportWindow || emptyReportScope) return
+    const range = options.point ? reportPointRange(options.point, interval, reportWindow) : reportWindow
+    if (!range) return
+    dialogTrigger.current = options.trigger ?? document.activeElement
+    setSelection({
+      group: kind, source: reportWindow, range, label,
+      category: options.category, projected: options.projected ?? 0,
+      statuses, accountIds: reportAccountIds,
+    })
+  }
+  const openCategory = (
+    item: { key: string; label: string; group: string; projected_value?: number },
+    point?: string,
+    trigger?: Element | null,
+  ) => {
+    if (item.key === 'other') return
+    openSelection(item.group, item.key === 'uncategorized' ? t('reports.uncategorized') : item.label, {
+      category: item.key, point, projected: item.projected_value, trigger,
+    })
+  }
+
+  const observedBar = (group: 'income' | 'expenses') => (props: BarShapeProps) => {
+    const point = props.payload?.date
+    const action = reportWindow && typeof point === 'string' && props.payload?.[group] > 0
+      && reportPointRange(point, interval, reportWindow)
+      ? reportChartAction(`${t(`reports.${group}`)} · ${point}`, () => {
+          setSelectedDate(point)
+          openSelection(group, t(`reports.${group}`), { point })
+        })
+      : undefined
+    return action
+      ? <g {...action}><Rectangle {...props} /></g>
+      : <Rectangle {...props} />
+  }
 
   // For cash flow we split the line at `forecast_start_date` so the past
   // section renders solid and the forward projection renders dashed.
@@ -544,7 +626,12 @@ export default function ReportsPage() {
         .filter((b) => b.value > 0)
     : null
 
-  const compositionBreakdownData = snapshotBreakdownData ?? breakdownData
+  const investmentValue = (snapshotTrendPoint?.composition ?? data?.composition ?? [])
+    .filter((item) => item.group === 'investments')
+    .reduce((sum, item) => sum + item.value, 0)
+  const compositionBreakdownData = compositionView === 'investments' && investmentValue > 0
+    ? [{ key: 'investments', label: t('reports.investments'), value: investmentValue, color: 'var(--chart-5)' }]
+    : snapshotBreakdownData ?? breakdownData
 
   const changePrefix = (summary?.change_amount ?? 0) >= 0 ? '+' : ''
   const changeColor = (summary?.change_amount ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-500'
@@ -563,9 +650,11 @@ export default function ReportsPage() {
   // Composition toggle options per report type
   const compositionOptions = activeTab === 'net_worth'
     ? ['netWorth', 'assetsAndAccounts', 'liabilities'] as const
-    : activeTab === 'income_expenses' || activeTab === 'cash_flow'
-      ? ['net', 'byIncome', 'byExpenses'] as const
-      : ['summary', 'detailed'] as const
+    : activeTab === 'income_expenses'
+      ? ['net', 'byIncome', 'byExpenses', ...(composition.some((item) => item.group === 'investments') ? ['investments'] : [])]
+      : activeTab === 'cash_flow'
+        ? ['net', 'byIncome', 'byExpenses'] as const
+        : ['summary', 'detailed'] as const
 
   // Which breakdown groups are visible in each toggle state. null = show all.
   const activeCompositionGroups: Set<string> | null = (() => {
@@ -573,6 +662,7 @@ export default function ReportsPage() {
     if (compositionView === 'liabilities') return new Set(['liabilities'])
     if (compositionView === 'byIncome') return new Set(['income'])
     if (compositionView === 'byExpenses') return new Set(['expenses'])
+    if (compositionView === 'investments') return new Set(['investments'])
     return null
   })()
 
@@ -665,6 +755,7 @@ export default function ReportsPage() {
         value: c.value,
         color: activeTab === 'net_worth' ? (netWorthColorMap.get(c.key) ?? OTHER_SLICE_COLOR) : c.color,
         group: c.group,
+        category: c,
       }))
   })()
 
@@ -709,7 +800,8 @@ export default function ReportsPage() {
       name: string
       value: number
       color: string
-      children?: { name: string; value: number; color: string }[]
+      category?: (typeof compositionDetail)[number]['category']
+      children?: typeof compositionDetail
     }[] = []
 
     for (const g of innerGroups) {
@@ -739,6 +831,13 @@ export default function ReportsPage() {
 
   return (
     <div>
+      {selection && <ReportTransactionsDialog selection={selection} onClose={() => {
+        setSelection(null)
+        const trigger = dialogTrigger.current
+        if (trigger instanceof HTMLElement || trigger instanceof SVGElement) {
+          requestAnimationFrame(() => { if (trigger.isConnected) trigger.focus() })
+        }
+      }} />}
       <PageHeader
         section={t('reports.section')}
         title={t(currentTab.labelKey)}
@@ -805,11 +904,12 @@ export default function ReportsPage() {
                 <DateRangePicker
                   variant="segment"
                   active={isCustomRange}
-                  from={customFrom}
-                  to={customTo}
+                  from={hasReportFilters && isCustomRange ? activeWindow?.from ?? customFrom : customFrom}
+                  to={hasReportFilters && isCustomRange ? activeWindow?.to ?? customTo : customTo}
                   defaultFrom={customDefaults.from}
                   defaultTo={customDefaults.to}
-                  disallowFuture
+                  latestDate={hasReportFilters ? undefined : todayStr}
+                  requireBothDates={hasReportFilters}
                   maxRangeYears={CUSTOM_RANGE_MAX_YEARS}
                   onChange={(f, to) => {
                     setCustomFrom(f)
@@ -938,10 +1038,21 @@ export default function ReportsPage() {
             )}
           </button>
         ))}
+        {hasReportFilters && (
+          <div className="sticky right-0 ml-auto mb-1 shrink-0 bg-background">
+            <ReportFilters
+              key={activeTab}
+              statuses={statuses}
+              accountIds={selectedAccounts}
+              collectionIds={activeAccountIds}
+              onApply={applyReportFilters}
+            />
+          </div>
+        )}
         <Button
           variant="ghost"
           size="sm"
-          className="ml-auto mb-1 h-8 shrink-0 gap-1.5 px-2 text-muted-foreground"
+          className={`mb-1 h-8 shrink-0 gap-1.5 px-2 text-muted-foreground ${!hasReportFilters ? 'ml-auto' : ''}`}
           aria-label={t('library.manageReports')}
           title={t('library.manageReports')}
           onClick={() => openLibrary('reports')}
@@ -1065,6 +1176,12 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {!!meta?.missing_fx_count && (
+        <p className="mb-3 text-sm text-muted-foreground" role="status">
+          {t('reports.drilldown.missingFx', { count: meta.missing_fx_count })}
+        </p>
+      )}
+
       {/* Flow (Sankey) */}
       {isMoneyMap && (
         <div className="bg-card rounded-xl border border-border shadow-sm mb-5">
@@ -1095,7 +1212,12 @@ export default function ReportsPage() {
             {isLoading ? (
               <div className="px-2"><Skeleton className="h-[360px] w-full" /></div>
             ) : (
-              <CashflowSankey composition={composition} currency={userCurrency} locale={locale} />
+              <CashflowSankey
+                composition={composition}
+                currency={userCurrency}
+                locale={locale}
+                onCategorySelect={reportWindow ? (item, trigger) => openCategory(item, undefined, trigger) : undefined}
+              />
             )}
           </div>
         </div>
@@ -1297,8 +1419,8 @@ export default function ReportsPage() {
                   contentStyle={tooltipStyle}
                 />
                 <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="3 3" />
-                  <Bar dataKey="income" fill={SERIES_COLORS.income} radius={[4, 4, 0, 0]} maxBarSize={20} />
-                  <Bar dataKey="expenses" fill={SERIES_COLORS.expenses} radius={[4, 4, 0, 0]} maxBarSize={20} />
+                  <Bar dataKey="income" shape={observedBar('income')} fill={SERIES_COLORS.income} radius={[4, 4, 0, 0]} maxBarSize={20} />
+                  <Bar dataKey="expenses" shape={observedBar('expenses')} fill={SERIES_COLORS.expenses} radius={[4, 4, 0, 0]} maxBarSize={20} />
                   <Bar dataKey="projectedIncome" fill={SERIES_COLORS.projectedIncome} radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
                   <Bar dataKey="projectedExpenses" fill={SERIES_COLORS.projectedExpenses} radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
                 <Line
@@ -1469,6 +1591,17 @@ export default function ReportsPage() {
                                 dataKey="value"
                                 stroke="var(--card)"
                                 strokeWidth={2}
+                                isAnimationActive={reportWindow ? false : undefined}
+                                shape={reportWindow ? (props, index) => {
+                                  const item = outerDonutData[index]
+                                  if (!item?.category) return <Sector {...props} />
+                                  const category = item.category
+                                  return (
+                                    <g {...reportChartAction(item.name, () => openCategory(category, snapshotTrendPoint?.date))}>
+                                      <Sector {...props} />
+                                    </g>
+                                  )
+                                } : undefined}
                               >
                                 {outerDonutData.map((entry, idx) => (
                                   <Cell key={idx} fill={entry.color} />
@@ -1525,8 +1658,10 @@ export default function ReportsPage() {
                                 ? t(isHistoricalSnapshot ? 'reports.youOwed' : 'reports.youOwe', { defaultValue: isHistoricalSnapshot ? 'You Owed' : 'You Owe' })
                                 : compositionView === 'byIncome' ? t('reports.income')
                                 : compositionView === 'byExpenses' ? t('reports.expenses')
-                                : meta?.type === 'income_expenses' ? t('reports.netIncome')
-                                : t(currentTab.labelKey)}
+                                : compositionView === 'investments'
+                                  ? t('reports.investments')
+                                  : meta?.type === 'income_expenses' ? t('reports.netIncome')
+                                    : t(currentTab.labelKey)}
                           </span>
                           <span className="text-base font-bold text-foreground tabular-nums">
                             {mask(formatCompactCurrency(
@@ -1557,17 +1692,20 @@ export default function ReportsPage() {
                         </div>
                         {hasOuter && (() => {
                           const visible = outerDonutData.slice(0, 6)
-                          const hiddenCount = compositionDetail.length - visible.length
+                          const hiddenCount = compositionDetail.length - (reportWindow ? visible.filter((item) => item.category).length : visible.length)
                           return (
                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
-                              {visible.map((d, i) => (
-                                <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
+                              {visible.map((d, i) => {
+                                const category = d.category
+                                const Tag = reportWindow && category ? 'button' : 'div'
+                                return <Tag key={`${i}-${d.name}`} className="flex items-center gap-1.5 rounded focus-visible:outline-2 focus-visible:outline-primary"
+                                  onClick={reportWindow && category ? () => openCategory(category, snapshotTrendPoint?.date) : undefined}>
                                   <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                                   <span className="text-[11px] text-muted-foreground whitespace-nowrap">
                                     {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
                                   </span>
-                                </div>
-                              ))}
+                                </Tag>
+                              })}
                               {hiddenCount > 0 && (
                                 <Popover>
                                   <PopoverTrigger asChild>
@@ -1585,8 +1723,10 @@ export default function ReportsPage() {
                                     <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
                                       {compositionDetail.map((d, i) => {
                                         const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
+                                        const Tag = reportWindow ? 'button' : 'div'
                                         return (
-                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
+                                          <Tag key={`${i}-${d.name}`} className="flex items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-primary"
+                                            onClick={reportWindow ? () => openCategory(d.category, snapshotTrendPoint?.date) : undefined}>
                                             <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                                             <span className="text-[11px] text-muted-foreground flex-1 truncate">
                                               {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
@@ -1594,7 +1734,7 @@ export default function ReportsPage() {
                                             <span className="text-xs text-muted-foreground shrink-0">
                                               {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
                                             </span>
-                                          </div>
+                                          </Tag>
                                         )
                                       })}
                                     </div>
@@ -1723,10 +1863,14 @@ export default function ReportsPage() {
                         {pageItems.map((item) => {
                           const sparkData = item.series.map((s) => ({ date: s.date, v: s.value }))
                           const gradId = `grad-${item.key}-${item.group}-p${pageIdx}`
+                          const actionable = item.key !== 'other' && !!reportWindow
+                          const Tag = actionable ? 'button' : 'div'
                           return (
-                            <div
+                            <Tag
                               key={`${item.key}-${item.group}`}
-                              className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
+                              className={`min-w-0 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-left ${actionable ? 'cursor-pointer hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary' : ''}`}
+                              tabIndex={actionable && pageIdx !== sparklinePage ? -1 : undefined}
+                              onClick={actionable ? () => openCategory(item) : undefined}
                             >
                               <div className="flex items-center gap-1.5 mb-0.5">
                                 <div
@@ -1770,7 +1914,7 @@ export default function ReportsPage() {
                                   </AreaChart>
                                 </ResponsiveContainer>
                               </div>
-                            </div>
+                            </Tag>
                           )
                         })}
                       </div>

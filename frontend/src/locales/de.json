@@ -2162,6 +2162,17 @@
     "propertyEquity": "Wert {{value}} · Schuld {{debt}} · Eigenkapital {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Transaktionsstatus"
+    },
+    "drilldown": {
+      "observed": "Tatsächlich",
+      "projected": "Prognose",
+      "total": "Gesamt",
+      "context": "Beiträge zum Bericht",
+      "missingFx_one": "{{count}} Transaktion ohne Wechselkurs",
+      "missingFx_other": "{{count}} Transaktionen ohne Wechselkurs"
+    },
     "section": "Analysen",
     "netWorth": "Nettovermögen",
     "trend": "Im Zeitverlauf",

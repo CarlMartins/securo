@@ -7,6 +7,9 @@ import {
 } from 'd3-sankey'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { ReportCompositionItem } from '@/types'
+import { reportChartAction } from '@/lib/report-selection'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 
 // Colour carries MEANING, not category identity: green = money in, red = money
 // out, gray = uncategorised/folded. Tinting by category (the old approach) made
@@ -38,6 +41,7 @@ interface SankeyNodeDatum {
   name: string
   color: string
   side: 'income' | 'center' | 'expense' | 'investment'
+  category?: SankeyCategory
 }
 
 interface SankeyLinkDatum {
@@ -64,8 +68,10 @@ function formatMoney(value: number, currency: string, locale: string, compact: b
   }).format(value)
 }
 
+type SankeyCategory = ReportCompositionItem & { folded?: ReportCompositionItem[] }
+
 /** Sort largest-first, then fold everything past the cap into a single "Other". */
-function collapse(items: ReportCompositionItem[], otherLabel: string): ReportCompositionItem[] {
+function collapse(items: ReportCompositionItem[], otherLabel: string): SankeyCategory[] {
   const sorted = [...items].sort((a, b) => b.value - a.value)
   if (sorted.length <= MAX_NODES_PER_SIDE) return sorted
   const top = sorted.slice(0, MAX_NODES_PER_SIDE - 1)
@@ -73,7 +79,7 @@ function collapse(items: ReportCompositionItem[], otherLabel: string): ReportCom
   const otherValue = rest.reduce((s, c) => s + c.value, 0)
   return [
     ...top,
-    { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group },
+    { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group, folded: rest },
   ]
 }
 
@@ -81,14 +87,16 @@ interface CashflowSankeyProps {
   composition: ReportCompositionItem[]
   currency: string
   locale: string
+  onCategorySelect?: (category: ReportCompositionItem, trigger?: Element | null) => void
 }
 
-export function CashflowSankey({ composition, currency, locale }: CashflowSankeyProps) {
+export function CashflowSankey({ composition, currency, locale, onCategorySelect }: CashflowSankeyProps) {
   const { t } = useTranslation()
   const { privacyMode, MASK } = usePrivacyMode()
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [hover, setHover] = useState<Hover | null>(null)
+  const [folded, setFolded] = useState<{ category: SankeyCategory; trigger: Element | null } | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -148,6 +156,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: labelFor(c),
         color: isNeutral(c) ? NEUTRAL_COLOR : INCOME_COLOR,
         side: 'income',
+        category: c,
       }),
     )
 
@@ -171,6 +180,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: labelFor(c),
         color: isNeutral(c) ? NEUTRAL_COLOR : EXPENSE_COLOR,
         side: 'expense',
+        category: c,
       }),
     )
 
@@ -180,6 +190,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         name: c.key === 'other' ? t('reports.other') : c.label,
         color: c.key === 'other' ? NEUTRAL_COLOR : INVEST_COLOR,
         side: 'investment',
+        category: c,
       }),
     )
 
@@ -306,11 +317,40 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
 
   return (
     <div ref={containerRef} className="w-full privacy-sensitive">
+      {folded && (
+        <Dialog open onOpenChange={(open) => {
+          if (!open) {
+            setFolded(null)
+            const trigger = folded.trigger
+            if (trigger instanceof SVGElement) requestAnimationFrame(() => trigger.focus())
+          }
+        }}>
+          <DialogContent className="max-h-[90dvh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{folded.category.label} · {t(`reports.${folded.category.group}`)}</DialogTitle>
+              <DialogDescription>{t('transactions.selectCategory')}</DialogDescription>
+            </DialogHeader>
+            <ul className="divide-y rounded-lg border">
+              {folded.category.folded?.map((category) => (
+                <li key={category.key}>
+                  <Button variant="ghost" className="w-full justify-between gap-3" onClick={() => {
+                    setFolded(null)
+                    onCategorySelect?.(category, folded.trigger)
+                  }}>
+                    <span className="truncate">{category.key === 'uncategorized' ? t('reports.uncategorized') : category.label}</span>
+                    <span>{fmtAmount(category.value)}</span>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </DialogContent>
+        </Dialog>
+      )}
       {layout && (
         <svg
           width={width}
           height={height}
-          role="img"
+          role={onCategorySelect ? "group" : "img"}
           aria-label={t('reports.flowChartAria')}
           onMouseLeave={() => setHover(null)}
         >
@@ -417,9 +457,18 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               const onLeft = x0 < width / 2
               const labelX = onLeft ? x1 + 8 : x0 - 8
               const ly = labelY.get(i) ?? (y0 + y1) / 2
+              const category = node.category
+              const action = category && onCategorySelect ? reportChartAction(node.name, () => {
+                if (category.folded) {
+                  setFolded({ category, trigger: document.activeElement })
+                } else {
+                  onCategorySelect(category)
+                }
+              }) : undefined
               return (
                 <g
                   key={i}
+                  {...action}
                   style={{ transition: 'opacity 0.2s ease', opacity: dimmed ? 0.35 : 1 }}
                   onMouseEnter={() => setHover({ kind: 'node', index: i })}
                 >

@@ -62,3 +62,7 @@ As fontes dos 14 casos são [API](tests/test_custom_reports_api.py) e [interface
 5. **Detalhamento no Money Map.** Reaproveitar a seleção, apresentação e apuração validadas em Receitas vs Despesas. Acrescentar os nós acionáveis e as categorias agrupadas, incluindo os casos em que o valor mostrado contém projeções.
 
 As decisões funcionais de correspondência exata, aritmética decimal, preservação de identidade e estado vazio estão fechadas. As [decisões restantes](tests/cenarios.md#decisões-restantes) delimitam as escolhas que ainda afetam valor, rastreabilidade ou apresentação.
+
+## Reimplementação independente
+
+A branch `reimplementacao/v0.19.0` implementa os contratos e mantém a integração com os componentes nativos. A [matriz de aceite da execução](testes-reimplementacao-v0.19.0.md) registra critérios, evidências, compatibilidade da API, comparação visual e comandos de reprodução. Os resultados e a classificação acima continuam sendo a linha de base do upstream.

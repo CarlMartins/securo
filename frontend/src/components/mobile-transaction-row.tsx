@@ -61,7 +61,7 @@ export function MobileTransactionRow({
     ? transactionDescription(tx.description, tx.source, t)
     : tx.description
 
-  const displayAmount = tx.is_shared && tx.viewer_share != null
+  const displayAmount = tx.report_amount != null ? Number(tx.report_amount) : tx.is_shared && tx.viewer_share != null
     ? Number(tx.viewer_share)
     : Number(tx.amount)
 
@@ -197,14 +197,14 @@ export function MobileTransactionRow({
       <div className="shrink-0 text-right">
         <span className={`text-sm font-bold tabular-nums ${amountColor}`}>
           {mask(
-            `${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '\u2212'}${formatCurrency(
+            `${tx.is_ignored && tx.report_amount == null ? ' ' : tx.type === 'credit' ? '+' : '\u2212'}${formatCurrency(
               Math.abs(displayAmount),
-              tx.currency,
+              tx.report_amount == null ? tx.currency : userCurrency,
               locale,
             )}`,
           )}
         </span>
-        {tx.amount_primary != null && tx.currency !== userCurrency && (
+        {tx.report_amount == null && tx.amount_primary != null && tx.currency !== userCurrency && (
           <div className="flex items-center justify-end gap-0.5 mt-0.5">
             {tx.fx_fallback && (
               <AlertTriangle size={10} className="text-amber-500 shrink-0" />

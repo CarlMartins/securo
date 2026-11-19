@@ -2285,6 +2285,17 @@
     "propertyEquity": "Hodnota {{value}} · Dlh {{debt}} · Vlastný kapitál {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Stav transakcie"
+    },
+    "drilldown": {
+      "observed": "Skutočnosť",
+      "projected": "Prognóza",
+      "total": "Spolu",
+      "context": "Sumy zahrnuté v prehľade",
+      "missingFx_one": "{{count}} transakcia bez výmenného kurzu",
+      "missingFx_other": "Transakcie bez výmenného kurzu ({{count}})"
+    },
     "section": "Analytika",
     "netWorth": "Čisté imanie",
     "trend": "V čase",

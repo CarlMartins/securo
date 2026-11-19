@@ -280,6 +280,7 @@ export interface DescriptionSuggestion {
 }
 
 export interface Transaction {
+  report_amount?: number | string | null
   /** Every invoice this transaction settles — a payout net of fees
    *  settles several. Absent in a workspace without the module. */
   invoice_links?: TransactionInvoiceLink[] | null
@@ -1401,6 +1402,9 @@ export interface ReportMeta {
   series_keys: string[]
   currency: string
   interval: string
+  observed_from?: string | null
+  observed_to?: string | null
+  missing_fx_count?: number
   forecast_start_date?: string | null
   baseline_active?: boolean
   baseline_lookback_days?: number | null
@@ -1410,6 +1414,7 @@ export interface ReportMeta {
 }
 
 export interface ReportCompositionItem {
+  projected_value?: number
   key: string
   label: string
   value: number
@@ -1418,6 +1423,7 @@ export interface ReportCompositionItem {
 }
 
 export interface CategoryTrendItem {
+  projected_value?: number
   key: string
   label: string
   color: string
@@ -2240,4 +2246,21 @@ export interface LoanSchedule {
   projected_payoff_date: string | null
   paid_off: boolean
   installments: LoanInstallment[]
+}
+
+export interface ReportTransactionsResponse {
+  items: {
+    id: string
+    description: string
+    notes: string | null
+    account_name: string | null
+    account_number: string | null
+    date: string
+    bank_date: string
+    status: string
+    amount: string
+  }[]
+  total: number
+  total_amount: string
+  currency: string
 }

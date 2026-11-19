@@ -2165,6 +2165,17 @@
     "propertyEquity": "Valor {{value}} · Dívida {{debt}} · Patrimônio {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Status da transação"
+    },
+    "drilldown": {
+      "observed": "Observado",
+      "projected": "Projetado",
+      "total": "Total",
+      "context": "Contribuições do relatório",
+      "missingFx_one": "{{count}} transação sem taxa de conversão",
+      "missingFx_other": "{{count}} transações sem taxa de conversão"
+    },
     "section": "Análises",
     "netWorth": "Patrimônio Líquido",
     "trend": "Ao Longo do Tempo",

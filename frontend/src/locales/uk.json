@@ -2186,6 +2186,17 @@
     "propertyEquity": "Вартість {{value}} · Борг {{debt}} · Власний капітал {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Статус операції"
+    },
+    "drilldown": {
+      "observed": "Фактичні суми",
+      "projected": "Прогноз",
+      "total": "Разом",
+      "context": "Суми, враховані у звіті",
+      "missingFx_one": "Операції без обмінного курсу ({{count}})",
+      "missingFx_other": "Операції без обмінного курсу ({{count}})"
+    },
     "section": "Аналітика",
     "netWorth": "Власний капітал",
     "trend": "Динаміка",

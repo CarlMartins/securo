@@ -2163,6 +2163,17 @@
     "propertyEquity": "Waarde {{value}} · Schuld {{debt}} · Eigen vermogen {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Transactiestatus"
+    },
+    "drilldown": {
+      "observed": "Werkelijk",
+      "projected": "Verwacht",
+      "total": "Totaal",
+      "context": "Bijdragen aan het rapport",
+      "missingFx_one": "{{count}} transactie zonder wisselkoers",
+      "missingFx_other": "{{count}} transacties zonder wisselkoers"
+    },
     "section": "Analyses",
     "netWorth": "Netto waarde",
     "trend": "Na verloop van tijd",

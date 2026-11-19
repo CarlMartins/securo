@@ -2161,6 +2161,17 @@
     "propertyEquity": "Value {{value}} · Debt {{debt}} · Equity {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Transaction status"
+    },
+    "drilldown": {
+      "observed": "Observed",
+      "projected": "Projected",
+      "total": "Total",
+      "context": "Report contributions",
+      "missingFx_one": "{{count}} transaction has no conversion rate",
+      "missingFx_other": "{{count}} transactions have no conversion rate"
+    },
     "section": "Analytics",
     "netWorth": "Net Worth",
     "trend": "Over Time",

@@ -4,7 +4,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional, cast
 
-from sqlalchemy import CursorResult, and_, case, delete, literal, select, func, or_, update
+from sqlalchemy import CursorResult, Numeric, and_, bindparam, case, delete, literal, select, func, or_, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -149,6 +150,7 @@ async def get_transactions(
     exclude_ignored: bool = False,
     include_running_balance: bool = False,
     primary_currency: Optional[str] = None,
+    report_amounts: dict[uuid.UUID, Decimal] | None = None,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
     """List transactions for a workspace.
 
@@ -210,6 +212,18 @@ async def get_transactions(
     )
     if transaction_ids:
         base_query = base_query.where(Transaction.id.in_(transaction_ids))
+    report_sort_amount = None
+    if report_amounts is not None:
+        if session.get_bind().dialect.name == "postgresql":
+            # Two bound arrays avoid the parameter limit on long report periods.
+            report_rows = func.unnest(
+                bindparam("report_ids", list(report_amounts), type_=ARRAY(Transaction.id.type)),
+                bindparam("report_amounts", list(report_amounts.values()), type_=ARRAY(Numeric())),
+            ).table_valued("transaction_id", "amount").render_derived(name="report_rows")
+            base_query = base_query.join(report_rows, report_rows.c.transaction_id == Transaction.id)
+            report_sort_amount = report_rows.c.amount
+        else:
+            base_query = base_query.where(Transaction.id.in_(report_amounts))
     if use_group_scope:
         from app.models.group import GroupMember
         from app.models.transaction_split import TransactionSplit
@@ -525,7 +539,12 @@ async def get_transactions(
     # when stamped (coalesce → native amount as fallback for unstamped
     # rows). Computed before pagination so it covers the whole result set.
     summary: Optional[dict] = None
-    if include_summary:
+    if include_summary and report_amounts is not None:
+        ids = (await session.scalars(select(base_query.subquery().c.id))).all()
+        income = sum((report_amounts[row_id] for row_id in ids if report_amounts[row_id] > 0), Decimal(0))
+        expense = sum((-report_amounts[row_id] for row_id in ids if report_amounts[row_id] < 0), Decimal(0))
+        summary = {"income": income, "expense": expense, "net": income - expense, "excluded": Decimal(0)}
+    elif include_summary:
         # Income / expense / net use the shared `counts_as_pnl` definition
         # (issue #242) so the footer matches the dashboard & reports: paired
         # transfers, `treat_as_transfer` categories (transfers, investments,
@@ -605,6 +624,11 @@ async def get_transactions(
         "status": Transaction.status,
         "created_at": Transaction.created_at,
     }
+    if sort_by == "amount" and report_amounts:
+        sort_columns["amount"] = (
+            report_sort_amount if report_sort_amount is not None
+            else case(report_amounts, value=Transaction.id)
+        )
     chosen_col = sort_columns.get(sort_by) if sort_by else None
     if chosen_col is None:
         # Default: by date desc, with created_at as tiebreaker. id comes last

@@ -70,6 +70,7 @@ interface TransactionsFilterBarProps {
   onTypeChange: (value: string) => void
   filterStatus: string
   onStatusChange: (value: string) => void
+  reportContext?: { label: string; onRemove: () => void }
   hideIgnored: boolean
   onHideIgnoredChange: (value: boolean) => void
   filterFrom: string
@@ -113,6 +114,7 @@ export function TransactionsFilterBar({
   onTypeChange,
   filterStatus,
   onStatusChange,
+  reportContext,
   hideIgnored,
   onHideIgnoredChange,
   filterFrom,
@@ -202,6 +204,7 @@ export function TransactionsFilterBar({
   )
 
   const hasAnyFilter =
+    !!reportContext ||
     filterAccountIds.length > 0 ||
     filterCategoryIds.length > 0 ||
     filterUncategorized ||
@@ -1017,6 +1020,7 @@ export function TransactionsFilterBar({
           !!selectedPayee ||
           !!typeLabel ||
           !!statusLabel ||
+          !!reportContext ||
           !!dateLabel ||
           !!amountLabel) && (
           <div className="flex flex-wrap items-center gap-1 border-t border-border/60 px-2 py-1.5">
@@ -1028,7 +1032,7 @@ export function TransactionsFilterBar({
                   key={`acc-${id}`}
                   icon={<Wallet size={12} />}
                   label={t('transactions.account')}
-                  value={getAccountName(account)}
+                  value={`${getAccountName(account)}${reportContext && account.masked_number ? ` · ••${account.masked_number}` : ''}`}
                   onRemove={() =>
                     onAccountIdsChange(filterAccountIds.filter((x) => x !== id))
                   }
@@ -1076,6 +1080,11 @@ export function TransactionsFilterBar({
                 value={typeLabel}
                 onRemove={() => onTypeChange('')}
               />
+            )}
+            {reportContext && (
+              <FilterChip icon={<ListChecks size={12} />} label={t('reports.drilldown.context')} value={reportContext.label}
+                wrapValue
+                onRemove={reportContext.onRemove} />
             )}
             {statusLabel && (
               <FilterChip
@@ -1214,15 +1223,19 @@ interface FilterChipProps {
   label: string
   value: string
   tint?: string
+  wrapValue?: boolean
   onRemove: () => void
 }
 
-function FilterChip({ icon, label, value, tint, onRemove }: FilterChipProps) {
+function FilterChip({ icon, label, value, tint, wrapValue, onRemove }: FilterChipProps) {
   return (
     <button
       type="button"
       onClick={onRemove}
-      className="group inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/50 pl-2 pr-1.5 text-[11.5px] text-foreground transition-colors hover:border-destructive/40 hover:bg-destructive/5"
+      className={cn(
+        'group inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/50 pl-2 pr-1.5 text-[11.5px] text-foreground transition-colors hover:border-destructive/40 hover:bg-destructive/5',
+        wrapValue ? 'max-w-full py-0.5 text-left' : 'h-7',
+      )}
       style={tint ? { borderColor: `${tint}55`, backgroundColor: `${tint}12` } : undefined}
     >
       <span
@@ -1232,7 +1245,7 @@ function FilterChip({ icon, label, value, tint, onRemove }: FilterChipProps) {
         {icon}
       </span>
       <span className="text-muted-foreground">{label}:</span>
-      <span className="max-w-[140px] truncate font-medium text-foreground">
+      <span className={cn('font-medium text-foreground', wrapValue ? 'max-w-[200px] break-words' : 'max-w-[140px] truncate')}>
         {value}
       </span>
       <span className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground/70 group-hover:text-destructive">

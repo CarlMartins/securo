@@ -2161,6 +2161,17 @@
     "regenerate": "Újragenerálás"
   },
   "reports": {
+    "customFilters": {
+      "status": "Tranzakció állapota"
+    },
+    "drilldown": {
+      "observed": "Tényleges",
+      "projected": "Előrejelzés",
+      "total": "Összesen",
+      "context": "A jelentésben szereplő összegek",
+      "missingFx_one": "{{count}} tranzakcióhoz nincs árfolyam",
+      "missingFx_other": "{{count}} tranzakcióhoz nincs árfolyam"
+    },
     "section": "Elemzések",
     "netWorth": "Nettó vagyon",
     "trend": "Időbeli alakulás",

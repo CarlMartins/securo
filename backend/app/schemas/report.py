@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import BaseModel
 
 
@@ -28,6 +30,7 @@ class ReportCompositionItem(BaseModel):
     value: float
     color: str
     group: str
+    projected_value: float = 0
 
 
 class ReportDataPoint(BaseModel):
@@ -44,6 +47,9 @@ class ReportMeta(BaseModel):
     currency: str
     interval: str
     forecast_start_date: str | None = None
+    observed_from: str | None = None
+    observed_to: str | None = None
+    missing_fx_count: int = 0
     baseline_active: bool = False
     baseline_lookback_days: int | None = None
     # Cash flow only. ``runway_date`` is the first day (YYYY-MM-DD) the
@@ -62,6 +68,7 @@ class CategoryTrendItem(BaseModel):
     total: float
     group: str
     series: list[ReportDataPoint]
+    projected_value: float = 0
 
 
 class ReportResponse(BaseModel):
@@ -103,3 +110,22 @@ class CategoryStatementResponse(BaseModel):
     months: list[str]
     income: CategoryStatementSection
     expenses: CategoryStatementSection
+
+
+class ReportTransactionItem(BaseModel):
+    id: str
+    description: str
+    notes: str | None
+    account_name: str | None
+    account_number: str | None
+    date: str
+    bank_date: str
+    status: str
+    amount: Decimal
+
+
+class ReportTransactionsResponse(BaseModel):
+    items: list[ReportTransactionItem]
+    total: int
+    total_amount: Decimal
+    currency: str

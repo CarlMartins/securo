@@ -316,7 +316,9 @@ def _date_points(
     elif interval == "yearly":
         while current <= end:
             points.append(current)
-            current = date(current.year + 1, current.month, current.day)
+            next_year = current.year + 1
+            day = min(current.day, calendar.monthrange(next_year, current.month)[1])
+            current = date(next_year, current.month, day)
     else:
         # Default to monthly
         return _date_points(start, end, "monthly")
@@ -504,12 +506,13 @@ async def get_income_expenses_report(
     financial_year_start_month: int = 1,
     start_date: date | None = None,
     end_date: date | None = None,
+    statuses: tuple[str, ...] | None = None,
 ) -> ReportResponse:
     """Build income/expenses; explicit custom windows include actuals only."""
     filtered = account_ids is not None
     acct_filter = [Transaction.account_id.in_(account_ids)] if filtered else []
     real_today = app_today()
-    axis_end = end_date or real_today
+    axis_end = min(end_date, real_today) if end_date is not None else real_today
     start = _report_start_date(
         axis_end,
         months,
@@ -523,6 +526,19 @@ async def get_income_expenses_report(
     user = await session.get(User, user_id)
     primary_currency = user.primary_currency if user else get_settings().default_currency
     accounting_mode = await get_credit_card_accounting_mode(session)
+    if statuses is not None or start > axis_end:
+        from app.services.custom_income_expenses import build_report
+
+        selected_statuses = statuses if statuses is not None else ("posted",)
+        return await build_report(
+            session, workspace_id, user_id, primary_currency, accounting_mode,
+            start, axis_end, selected_statuses, account_ids,
+            include_forecasts=start_date is None and end_date is None and len(selected_statuses) == 2,
+            interval=interval,
+            labels=[_format_date_label(point, interval) for point in _date_points(start, axis_end, interval)],
+            format_label=_format_date_label,
+            trend_limit=CATEGORY_TREND_TOP_N,
+        )
     report_date = reporting_date_col(accounting_mode)
 
     label_expr = _interval_label_expr(interval, report_date).label('period')

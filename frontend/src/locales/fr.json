@@ -2165,6 +2165,17 @@
     "propertyEquity": "Valeur {{value}} · Dette {{debt}} · Valeur nette {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Statut de la transaction"
+    },
+    "drilldown": {
+      "observed": "Observé",
+      "projected": "Prévisionnel",
+      "total": "Total",
+      "context": "Montants du rapport",
+      "missingFx_one": "{{count}} transaction sans taux de change",
+      "missingFx_other": "{{count}} transactions sans taux de change"
+    },
     "section": "Analyses",
     "netWorth": "Valeur nette",
     "trend": "Dans le temps",

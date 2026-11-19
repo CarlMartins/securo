@@ -2301,6 +2301,17 @@
     "regenerate": "Přepočítat"
   },
   "reports": {
+    "customFilters": {
+      "status": "Stav transakce"
+    },
+    "drilldown": {
+      "observed": "Skutečnost",
+      "projected": "Prognóza",
+      "total": "Celkem",
+      "context": "Příspěvky v přehledu",
+      "missingFx_one": "{{count}} transakce bez směnného kurzu",
+      "missingFx_other": "Transakce bez směnného kurzu ({{count}})"
+    },
     "section": "Analytika",
     "netWorth": "Čisté jmění",
     "trend": "V čase",

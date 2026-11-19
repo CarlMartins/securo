@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.app_clock import app_today
 from app.core.database import get_async_session
 from app.core.workspace_context import WorkspaceContext, current_workspace
-from app.schemas.report import CategoryStatementResponse, ReportDataRange, ReportResponse
+from app.schemas.report import (
+    CategoryStatementResponse, ReportDataRange, ReportResponse,
+    ReportTransactionItem, ReportTransactionsResponse,
+)
+from app.services.account_service import get_account_name
+from app.services.admin_service import get_credit_card_accounting_mode
+from app.services.report_contributions import ReportGroup, load_contributions, select_contributions
 from app.services import category_statement_service, report_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -25,6 +32,8 @@ def _add_years(value: date, years: int) -> date:
     Clamps Feb 29 to Feb 28 when the target year isn't a leap year, so the
     result is always a valid calendar date rather than raising.
     """
+    if value.year + years > date.max.year:
+        return date.max
     try:
         return value.replace(year=value.year + years)
     except ValueError:
@@ -47,7 +56,7 @@ def _reject_unsupported_fiscal_year_report(
 
 
 def _resolve_custom_range(
-    start_date: date | None, end_date: date | None
+    start_date: date | None, end_date: date | None, *, allow_future: bool = False
 ) -> tuple[date | None, date | None]:
     """Validate a user-supplied custom range and return the (start, end) pair.
 
@@ -73,7 +82,7 @@ def _resolve_custom_range(
     # service below builds the same window from `app_today()`. Comparing
     # against a different calendar would reject the workspace's own today
     # or accept a date the workspace has not reached yet.
-    if end_date > app_today():
+    if not allow_future and end_date > app_today():
         raise HTTPException(
             status_code=422,
             detail="end_date must be on or before today",
@@ -135,6 +144,14 @@ async def get_net_worth(
     )
 
 
+def _parse_statuses(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if value not in {"posted", "pending", "posted,pending", "pending,posted"}:
+        raise HTTPException(status_code=422, detail="Invalid report statuses")
+    return tuple(value.split(","))
+
+
 @router.get("/income-expenses", response_model=ReportResponse)
 async def get_income_expenses(
     months: int = Query(12, ge=1, le=24),
@@ -144,6 +161,7 @@ async def get_income_expenses(
     days: Optional[int] = Query(None, ge=1, le=730),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
+    statuses: str | None = Query(None),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -154,7 +172,10 @@ async def get_income_expenses(
     `period`, and `days`. Custom ranges include actuals only, without estimates.
     """
     financial_year_start_month = _financial_year_start_month(ctx.workspace.tax_jurisdiction)
-    custom_start, custom_end = _resolve_custom_range(start_date, end_date)
+    selected_statuses = _parse_statuses(statuses)
+    custom_start, custom_end = _resolve_custom_range(
+        start_date, end_date, allow_future=selected_statuses is not None,
+    )
     effective_period = None if custom_start is not None else period
     _reject_unsupported_fiscal_year_report(
         effective_period, interval, financial_year_start_month
@@ -164,6 +185,61 @@ async def get_income_expenses(
         account_ids=account_ids, period=effective_period, days=days,
         financial_year_start_month=financial_year_start_month,
         start_date=custom_start, end_date=custom_end,
+        **({"statuses": selected_statuses} if selected_statuses is not None else {}),
+    )
+
+
+@router.get("/income-expenses/transactions", response_model=ReportTransactionsResponse)
+async def get_income_expense_transactions(
+    start_date: date,
+    end_date: date,
+    group: ReportGroup,
+    selection_from: date | None = None,
+    selection_to: date | None = None,
+    category: uuid.UUID | str | None = None,
+    statuses: str | None = None,
+    account_ids: list[uuid.UUID] | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    _resolve_custom_range(start_date, end_date, allow_future=True)
+    selected_statuses = _parse_statuses(statuses) or ("posted",)
+    uncategorized = category == "uncategorized"
+    if category is not None and not uncategorized:
+        try:
+            category = uuid.UUID(str(category))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid report category") from exc
+
+    currency = ctx.user.primary_currency
+    mode = await get_credit_card_accounting_mode(session)
+    observed, _ = await load_contributions(
+        session, ctx.workspace.id, ctx.user_id, currency, mode,
+        start_date, min(end_date, app_today()), selected_statuses, account_ids,
+    )
+    rows = select_contributions(
+        observed, group=group, uncategorized=uncategorized,
+        category_ids={category} if isinstance(category, uuid.UUID) else None,
+        start=selection_from, end=selection_to,
+    )
+    offset = (page - 1) * limit
+    items = []
+    for part, value in list(rows.values())[offset:offset + limit]:
+        tx = part.transaction
+        account = tx.account if not part.shared else None
+        items.append(ReportTransactionItem(
+            id=str(tx.id), description=tx.description,
+            notes=tx.notes if not part.shared else None,
+            account_name=get_account_name(account) if account else None,
+            account_number=account.masked_number if account else None,
+            date=part.day.isoformat(), bank_date=tx.date.isoformat(),
+            status=tx.status, amount=value,
+        ))
+    return ReportTransactionsResponse(
+        items=items, total=len(rows), currency=currency,
+        total_amount=sum((value for _, value in rows.values()), Decimal(0)),
     )
 
 

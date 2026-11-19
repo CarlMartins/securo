@@ -2,6 +2,7 @@ import csv
 import io
 import uuid
 from datetime import date
+from decimal import Decimal
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,6 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
+from app.api.reports import _resolve_custom_range
+from app.services.report_contributions import ALL_STATUSES, ReportGroup, load_contributions, select_contributions
 from app.core.database import get_async_session
 from app.core.workspace_context import (
     WorkspaceContext,
@@ -158,6 +161,61 @@ def _merge_id_filters(
     return ids or None
 
 
+async def _report_ledger_amounts(
+    session: AsyncSession,
+    ctx: WorkspaceContext,
+    accounting_mode: str,
+    group: ReportGroup,
+    report_from: date | None,
+    report_to: date | None,
+    *,
+    from_date: date | None,
+    to_date: date | None,
+    account_ids: list[uuid.UUID] | None,
+    category_ids: list[uuid.UUID] | None,
+    uncategorized: bool,
+    transaction_status: str | None,
+    transaction_type: str | None,
+    min_amount: float | None,
+    max_amount: float | None,
+) -> dict[uuid.UUID, Decimal]:
+    if report_from is None or report_to is None:
+        raise HTTPException(status_code=422, detail="Missing report period")
+    _resolve_custom_range(report_from, report_to, allow_future=True)
+    start = min(report_from, from_date) if from_date else report_from
+    end = max(report_to, to_date) if to_date else report_to
+    _resolve_custom_range(start, end, allow_future=True)
+    observed, _ = await load_contributions(
+        session, ctx.workspace.id, ctx.user_id, ctx.user.primary_currency, accounting_mode,
+        start, min(end, app_today()),
+        (transaction_status,) if transaction_status else ALL_STATUSES, account_ids,
+    )
+    # Deduplicate over the source period first. The date filter can then
+    # restrict a clicked bar without admitting a pending equivalent.
+    scoped_group: ReportGroup | None = None
+    if transaction_type == "credit":
+        scoped_group = "income"
+    elif transaction_type == "debit":
+        scoped_group = "investments" if group == "investments" else "expenses"
+    elif transaction_type == "transfer":
+        scoped_group = "investments"
+    eligible = (
+        item for item in observed
+        if item.group != "investments" or group == "investments" or transaction_type == "transfer"
+    )
+    rows = select_contributions(
+        eligible, group=scoped_group, category_ids=set(category_ids or []),
+        uncategorized=uncategorized, start=from_date, end=to_date,
+    )
+    minimum = Decimal(str(min_amount)) if min_amount is not None else None
+    maximum = Decimal(str(max_amount)) if max_amount is not None else None
+    return {
+        tx_id: value for tx_id, (_, value) in rows.items()
+        if (minimum is None or abs(value) >= minimum)
+        and (maximum is None or abs(value) <= maximum)
+    }
+
+
 @router.get("", response_model=PaginatedTransactions)
 async def list_transactions(
     account_id: Optional[uuid.UUID] = Query(None),
@@ -188,20 +246,38 @@ async def list_transactions(
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
     sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    report_group: ReportGroup | None = Query(None),
+    report_from: date | None = Query(None),
+    report_to: date | None = Query(None),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
     accounting_mode = await get_credit_card_accounting_mode(session)
+    scoped_accounts = _merge_id_filters(account_id, account_ids)
+    scoped_categories = _merge_id_filters(category_id, category_ids)
+    report_amounts = None
+    if report_group:
+        report_amounts = await _report_ledger_amounts(
+            session, ctx, accounting_mode, report_group, report_from, report_to,
+            from_date=from_date, to_date=to_date, account_ids=scoped_accounts,
+            category_ids=scoped_categories, uncategorized=uncategorized,
+            transaction_status=status, transaction_type=type,
+            min_amount=min_amount, max_amount=max_amount,
+        )
     transactions, total, summary = await transaction_service.get_transactions(
         session, ctx.workspace.id, ctx.user_id,
-        account_ids=_merge_id_filters(account_id, account_ids),
-        category_ids=_merge_id_filters(category_id, category_ids),
-        payee_id=payee_id, from_date=from_date, to_date=to_date, page=page, limit=limit,
-        include_opening_balance=include_opening_balance, search=q, uncategorized=uncategorized,
+        account_ids=scoped_accounts,
+        category_ids=scoped_categories if report_amounts is None else None,
+        payee_id=payee_id,
+        from_date=from_date if report_amounts is None else None,
+        to_date=to_date if report_amounts is None else None,
+        page=page, limit=limit,
+        include_opening_balance=include_opening_balance, search=q,
+        uncategorized=uncategorized and report_amounts is None,
         shared_as_uncategorized=shared_as_uncategorized,
         txn_type=type, exclude_transfers=exclude_transfers,
         user_pnl_only=user_pnl_only,
-        exclude_ignored=exclude_ignored,
+        exclude_ignored=exclude_ignored and report_amounts is None,
         status=status,
         accounting_mode=accounting_mode,
         tags=tags,
@@ -211,14 +287,18 @@ async def list_transactions(
         statement_view=statement_view,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        min_amount=min_amount,
-        max_amount=max_amount,
+        min_amount=min_amount if report_amounts is None else None,
+        max_amount=max_amount if report_amounts is None else None,
+        report_amounts=report_amounts,
         include_summary=True,
         include_running_balance=include_running_balance,
         primary_currency=ctx.user.primary_currency,
     )
     primary_currency = ctx.user.primary_currency
     items = [_tag_fx_fallback(TransactionRead.model_validate(tx, from_attributes=True), primary_currency) for tx in transactions]
+    if report_amounts is not None:
+        for item in items:
+            item.report_amount = report_amounts[item.id]
     await _attach_invoice_links(session, ctx, items)
     await _attach_transfer_counterparts(session, ctx.workspace.id, items)
     summary_out = (
@@ -275,11 +355,32 @@ async def export_transactions(
     exclude_ignored: bool = Query(False, description="Drop rows the user marked ignored, or whose category is ignored"),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
+    report_group: ReportGroup | None = Query(None),
+    report_from: date | None = Query(None),
+    report_to: date | None = Query(None),
+    group_id: uuid.UUID | None = Query(None),
+    min_amount: float | None = Query(None, ge=0),
+    max_amount: float | None = Query(None, ge=0),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
     accounting_mode = await get_credit_card_accounting_mode(session)
-    if transaction_ids:
+    report_amounts = None
+    if report_group:
+        report_amounts = await _report_ledger_amounts(
+            session, ctx, accounting_mode, report_group, report_from, report_to,
+            from_date=from_date, to_date=to_date,
+            account_ids=_merge_id_filters(account_id, account_ids),
+            category_ids=_merge_id_filters(category_id, category_ids),
+            uncategorized=uncategorized, transaction_status=status, transaction_type=type,
+            min_amount=min_amount, max_amount=max_amount,
+        )
+        transactions, _, _ = await transaction_service.get_transactions(
+            session, ctx.workspace.id, ctx.user_id, report_amounts=report_amounts,
+            transaction_ids=transaction_ids, accounting_mode=accounting_mode,
+            payee_id=payee_id, search=q, tags=tags, group_id=group_id, skip_pagination=True,
+        )
+    elif transaction_ids:
         # Selection-only export: bypass user-facing filters but keep the
         # service-level workspace/visibility scoping intact.
         transactions, _, _ = await transaction_service.get_transactions(
@@ -303,6 +404,25 @@ async def export_transactions(
     output = io.StringIO()
     output.write("﻿")  # UTF-8 BOM for Excel
     writer = csv.writer(output)
+    if report_amounts is not None:
+        writer.writerow(["id", "reporting_date", "description", "report_amount", "currency", "status"])
+        for tx in transactions:
+            writer.writerow([
+                tx.id, reporting_date_value(tx, accounting_mode).isoformat(), tx.description,
+                report_amounts[tx.id], ctx.user.primary_currency, tx.status,
+            ])
+    else:
+        _write_transaction_export(writer, transactions, accounting_mode)
+    output.seek(0)
+    today = app_today().isoformat()
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="transactions-{today}.csv"'},
+    )
+
+
+def _write_transaction_export(writer, transactions, accounting_mode):
     writer.writerow(["date", "description", "amount", "type", "currency", "category", "account", "payee", "payee_name", "notes", "status", "source", "amount_primary", "fx_rate_used", "split_group", "split_index", "reporting_date", "reporting_date_override"])
     for tx in transactions:
         # A transaction split across categories leaves one row per part, so
@@ -331,13 +451,6 @@ async def export_transactions(
                 tx.reporting_date_override.isoformat() if tx.reporting_date_override else "",
             ])
 
-    output.seek(0)
-    today = app_today().isoformat()
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="transactions-{today}.csv"'},
-    )
 
 
 @router.patch("/bulk-categorize")

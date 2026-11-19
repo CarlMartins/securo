@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { ReportGroup, ReportSelection, ReportStatus } from '@/lib/report-selection'
 import type { LayoutItem } from '@/lib/library'
 import { normalizeBudgetComparisonRows } from '@/lib/budget-settings-utils'
 import type { AxiosResponse } from 'axios'
@@ -28,6 +29,7 @@ import type {
   LoanSchedule,
   DescriptionSuggestion,
   Transaction,
+  ReportTransactionsResponse,
   Payee,
   PayeeSummary,
   DeductionKind,
@@ -608,6 +610,9 @@ export const mortgagePayments = {
 // Transactions
 export const transactions = {
   list: async (params?: {
+    report_group?: ReportGroup
+    report_from?: string
+    report_to?: string
     account_id?: string
     account_ids?: string[]
     category_id?: string
@@ -819,6 +824,12 @@ export const transactions = {
     return data
   },
   export: async (params?: {
+    report_group?: ReportGroup
+    report_from?: string
+    report_to?: string
+    group_id?: string
+    min_amount?: number
+    max_amount?: number
     account_id?: string
     account_ids?: string[]
     category_id?: string
@@ -1667,17 +1678,33 @@ export const reports = {
     accountIds?: string[],
     period?: 'ytd',
     days?: number,
+    statuses?: ReportStatus[],
     startDate?: string,
     endDate?: string,
   ): Promise<ReportResponse> => {
     const extra = acctIdsParam(accountIds)
     const { data } = await api.get('/reports/income-expenses', {
       params: {
-        months, interval, period, days,
+        months, interval, period, days, statuses: statuses?.join(','),
         ...(startDate && endDate ? { start_date: startDate, end_date: endDate } : {}),
         ...(extra.params ?? {}),
       },
       ...(extra.paramsSerializer ? { paramsSerializer: extra.paramsSerializer } : {}),
+    })
+    return data
+  },
+  incomeExpenseTransactions: async (
+    selection: ReportSelection, page: number, limit: number,
+  ): Promise<ReportTransactionsResponse> => {
+    const { data } = await api.get('/reports/income-expenses/transactions', {
+      params: {
+        start_date: selection.source.from, end_date: selection.source.to,
+        selection_from: selection.range.from, selection_to: selection.range.to,
+        group: selection.group, category: selection.category,
+        statuses: selection.statuses.join(','), account_ids: selection.accountIds,
+        page, limit,
+      },
+      paramsSerializer: { indexes: null },
     })
     return data
   },

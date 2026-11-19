@@ -2161,6 +2161,17 @@
     "propertyEquity": "評価額 {{value}} · 負債 {{debt}} · 純資産 {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "取引のステータス"
+    },
+    "drilldown": {
+      "observed": "実績",
+      "projected": "予測",
+      "total": "合計",
+      "context": "レポートの計上額",
+      "missingFx_one": "換算レートのない取引が{{count}}件あります",
+      "missingFx_other": "換算レートのない取引が{{count}}件あります"
+    },
     "section": "分析",
     "netWorth": "純資産",
     "trend": "推移",

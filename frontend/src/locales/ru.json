@@ -2186,6 +2186,17 @@
     "propertyEquity": "Стоимость {{value}} · Долг {{debt}} · Собственный капитал {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "Статус операции"
+    },
+    "drilldown": {
+      "observed": "Фактические суммы",
+      "projected": "Прогноз",
+      "total": "Итого",
+      "context": "Суммы, учтённые в отчёте",
+      "missingFx_one": "Операции без курса обмена ({{count}})",
+      "missingFx_other": "Операции без курса обмена ({{count}})"
+    },
     "section": "Аналитика",
     "netWorth": "Собственный капитал",
     "trend": "Динамика",

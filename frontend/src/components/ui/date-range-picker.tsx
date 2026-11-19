@@ -52,6 +52,9 @@ export interface DateRangePickerProps {
   defaultTo?: string
   /** Reject a candidate range whose (normalized) end date is after today. */
   disallowFuture?: boolean
+  /** Upper bound on the caller’s calendar, in YYYY-MM-DD. */
+  latestDate?: string
+  requireBothDates?: boolean
   /**
    * Reject a candidate range whose end date is more than this many calendar
    * years after the start date (the 10-year anniversary, not a fixed day
@@ -84,6 +87,8 @@ export function DateRangePicker({
   defaultFrom,
   defaultTo,
   disallowFuture = false,
+  latestDate,
+  requireBothDates = false,
   maxRangeYears,
 }: DateRangePickerProps) {
   const { t, i18n } = useTranslation()
@@ -109,9 +114,13 @@ export function DateRangePicker({
 
   // An empty draft is always valid — it's how Apply clears a saved range.
   const draftError = (() => {
+    if (requireBothDates && Boolean(draftFrom) !== Boolean(draftTo)) {
+      return t('transactions.filtersBar.pickRange')
+    }
     const { from: draftStart, to: draftEnd } = normalizedDraft
     if (!draftStart && !draftEnd) return null
-    if (disallowFuture && draftEnd > localDateString()) {
+    const maxDate = latestDate ?? (disallowFuture ? localDateString() : null)
+    if (maxDate && draftEnd > maxDate) {
       return t('transactions.filtersBar.futureDateError')
     }
     if (maxRangeYears && draftStart && draftEnd) {

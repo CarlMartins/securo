@@ -81,6 +81,7 @@ import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
 import { isTransferTransaction } from '@/lib/transaction-transfer'
+import { readReportContext } from '@/lib/report-selection'
 import { readCalendarDateBasis } from '@/lib/transaction-calendar'
 import { ReportingDateBadge } from '@/components/reporting-date-badge'
 
@@ -106,6 +107,7 @@ export default function TransactionsPage() {
   const { t, i18n } = useTranslation()
   const { collapsed: sidebarCollapsed } = useSidebarState()
   const [searchParams] = useSearchParams()
+  const [reportContext, setReportContext] = useState(() => readReportContext(searchParams))
   const navigate = useNavigate()
   const locale = useDisplayLocale()
   const dateLocale = useDateLocale()
@@ -133,7 +135,7 @@ export default function TransactionsPage() {
     const initial = searchParams.get('category_id')
     return initial ? [initial] : []
   })
-  const [filterUncategorized, setFilterUncategorized] = useState<boolean>(false)
+  const [filterUncategorized, setFilterUncategorized] = useState(() => searchParams.get('uncategorized') === '1')
   // Seed the date range from the URL, else the range last used on this page
   // (issue #1053), else the current month. Done in the initializer so it
   // survives effect re-runs (e.g. React StrictMode's double-invoke in
@@ -260,6 +262,7 @@ export default function TransactionsPage() {
 
     const nextQ = searchParams.get('q') ?? ''
     setViewMode(searchParams.get('view') === 'calendar' ? 'calendar' : 'list')
+    setReportContext(readReportContext(searchParams))
     setCalendarSelectedDate(searchParams.get('day') ?? '')
     setSearchInput(nextQ)
     setSearchQuery(nextQ)
@@ -313,7 +316,8 @@ export default function TransactionsPage() {
         ['to', filterTo],
         ['min_amount', filterMinAmount],
         ['max_amount', filterMaxAmount],
-        ['hide_ignored', hideIgnored ? 'true' : ''],
+        ['hide_ignored', hideIgnored ? 'true' : reportContext ? 'false' : ''],
+        ...Object.entries(reportContext ?? {}),
       ].filter(([, v]) => v.length),
     );
 
@@ -339,6 +343,7 @@ export default function TransactionsPage() {
     filterMinAmount,
     filterMaxAmount,
     hideIgnored,
+    reportContext,
   ]);
 
   useEffect(() => {
@@ -355,7 +360,7 @@ export default function TransactionsPage() {
     setSelectedIds(new Set())
     setLastSelectedId(null)
     setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
+  }, [page, reportContext, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
 
   useEffect(() => {
     if (viewMode === 'calendar') {
@@ -405,10 +410,11 @@ export default function TransactionsPage() {
     && activeAccountIds !== null && activeAccountIds.length === 0
 
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
+    queryKey: ['transactions', page, limit, reportContext, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
     enabled: !noAccounts,
     queryFn: () =>
       transactions.list({
+        ...reportContext,
         page,
         limit,
         account_ids: effectiveAccountIds.length > 0 ? effectiveAccountIds : undefined,
@@ -500,6 +506,12 @@ export default function TransactionsPage() {
   const { data: accountsList } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => accountsApi.list(),
+  })
+
+  const { data: reportAccounts } = useQuery({
+    queryKey: ['accounts', 'include-closed'],
+    queryFn: () => accountsApi.list(true),
+    enabled: !!reportContext,
   })
 
   const { data: payeesList } = useQuery({
@@ -793,7 +805,7 @@ export default function TransactionsPage() {
 
   // Tag filtering is now applied server-side, so the visible list and the
   // page count both reflect the same filtered total — issue #88.
-  const filteredItems = useMemo(() => data?.items ?? [], [data?.items])
+  const filteredItems = useMemo(() => noAccounts ? [] : data?.items ?? [], [data?.items, noAccounts])
   const selectableItems = filteredItems.filter(tx => !tx.is_shared)
 
   // Group transactions by date for the mobile card view
@@ -848,6 +860,10 @@ export default function TransactionsPage() {
     let net = 0
     for (const tx of data?.items ?? []) {
       if (!selectedIds.has(tx.id)) continue
+      if (tx.report_amount != null) {
+        net += Number(tx.report_amount)
+        continue
+      }
       const base = Math.abs(Number(tx.amount_primary ?? tx.amount))
       net += tx.type === 'credit' ? base : -base
     }
@@ -989,12 +1005,19 @@ export default function TransactionsPage() {
   const handleExport = async () => {
     setExporting(true)
     try {
-      if (selectedIds.size > 0) {
+      if (selectedIds.size > 0 && !reportContext) {
         // Selection-only export bypasses other filters and hits the
         // backend's `transaction_ids` short-circuit.
         await transactions.export({ transaction_ids: Array.from(selectedIds) })
       } else {
         await transactions.export({
+          ...reportContext,
+          ...(reportContext ? {
+            group_id: filterGroupId || undefined,
+            min_amount: filterMinAmount ? Number(filterMinAmount) : undefined,
+            max_amount: filterMaxAmount ? Number(filterMaxAmount) : undefined,
+            transaction_ids: selectedIds.size ? Array.from(selectedIds) : undefined,
+          } : {}),
           account_ids: effectiveAccountIds.length > 0 ? effectiveAccountIds : undefined,
           category_ids: filterCategoryIds.length > 0 ? filterCategoryIds : undefined,
           payee_id: filterPayee || undefined,
@@ -1071,6 +1094,12 @@ export default function TransactionsPage() {
   const stripHashtags = (notes: string) => notes.replace(/#[\wÀ-ž-]+/g, '').trim()
 
   const renderAmountCell = (tx: Transaction) => {
+    if (tx.report_amount != null) {
+      const value = Number(tx.report_amount)
+      return <span className={`text-xs font-bold tabular-nums md:text-sm ${value >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
+        {mask(formatCurrency(value, data?.summary?.currency ?? userCurrency, locale))}
+      </span>
+    }
     const displayAmount = tx.is_shared && tx.viewer_share != null
       ? Number(tx.viewer_share)
       : Number(tx.amount)
@@ -1448,7 +1477,10 @@ export default function TransactionsPage() {
             view={{
               value: viewMode,
               onChange: (value) => {
-                if (value === 'calendar' && filterAccountIds.length > 1) setFilterAccountIds([])
+                if (value === 'calendar') {
+                  if (filterAccountIds.length > 1) setFilterAccountIds([])
+                  setReportContext(null)
+                }
                 setViewMode(value)
               },
               listLabel: t('transactions.listView'),
@@ -1506,6 +1538,13 @@ export default function TransactionsPage() {
         filterType={filterType}
         onTypeChange={(v) => { setFilterType(v); setPage(1) }}
         filterStatus={filterStatus}
+        reportContext={reportContext ? {
+          onRemove: () => { setReportContext(null); setPage(1) },
+          label: [
+            t(`reports.${reportContext.report_group}`),
+            !filterStatus ? `${t('transactions.statusPosted')} + ${t('transactions.statusPending')}` : '',
+          ].filter(Boolean).join(' · '),
+        } : undefined}
         onStatusChange={(v) => { setFilterStatus(v); setPage(1) }}
         hideIgnored={hideIgnored}
         onHideIgnoredChange={handleHideIgnoredChange}
@@ -1516,6 +1555,7 @@ export default function TransactionsPage() {
         filterMaxAmount={filterMaxAmount}
         onAmountRangeChange={(min, max) => { setFilterMinAmount(min); setFilterMaxAmount(max); setPage(1) }}
         onClearAll={() => {
+          setReportContext(null)
           setFilterFrom('')
           setFilterTo('')
           setFilterAccountIds([])
@@ -1533,7 +1573,7 @@ export default function TransactionsPage() {
           clearTagFilters()
           setPage(1)
         }}
-        accounts={accountsList ?? []}
+        accounts={reportAccounts ?? accountsList ?? []}
         categories={categoriesList ?? []}
         referenceCategories={allCategoriesList}
         categoryGroups={categoryGroupsList ?? []}
@@ -1629,7 +1669,7 @@ export default function TransactionsPage() {
                     highlightedRowRef={tx.id === highlightId ? highlightedRowRef : undefined}
                     locale={locale}
                     dateLocale={dateLocale}
-                    userCurrency={userCurrency}
+                    userCurrency={reportContext ? data?.summary?.currency ?? userCurrency : userCurrency}
                     onSelect={toggleSelect}
                     onClick={(t) => {
                       if (t.is_shared) {

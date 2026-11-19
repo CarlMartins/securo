@@ -2161,6 +2161,17 @@
     "propertyEquity": "मूल्य {{value}} · ऋण {{debt}} · इक्विटी {{equity}}"
   },
   "reports": {
+    "customFilters": {
+      "status": "लेन-देन की स्थिति"
+    },
+    "drilldown": {
+      "observed": "वास्तविक",
+      "projected": "अनुमानित",
+      "total": "कुल",
+      "context": "रिपोर्ट में शामिल राशियाँ",
+      "missingFx_one": "{{count}} लेन-देन की विनिमय दर उपलब्ध नहीं है",
+      "missingFx_other": "{{count}} लेन-देन की विनिमय दर उपलब्ध नहीं है"
+    },
     "section": "एनालिटिक्स",
     "netWorth": "निवल संपत्ति",
     "trend": "समय के साथ",
