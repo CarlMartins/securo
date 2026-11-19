@@ -1,3 +1,6 @@
+from datetime import date
+from decimal import Decimal
+from uuid import UUID
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -104,3 +107,39 @@ class ProjectedTransaction(BaseModel):
     # Split template: `category_*` are empty and the parts are listed here.
     has_category_lines: bool = False
     category_lines: list[ProjectedCategoryLine] = []
+
+class PeriodSpending(BaseModel):
+    category_id: UUID | None
+    category_name: str
+    category_color: str
+    category_icon: str
+    total: Decimal
+    projected_total: Decimal
+
+
+class DashboardPeriod(BaseModel):
+    currency: str
+    posted_income: Decimal
+    pending_income: Decimal
+    posted_expenses: Decimal
+    pending_expenses: Decimal
+    additional_projected_income: Decimal
+    additional_projected_expenses: Decimal
+    spending: list[PeriodSpending]
+    missing_fx_count: int
+    uncategorized_count: int
+    uncategorized_amount: Decimal
+
+
+class PeriodBalancePoint(BaseModel):
+    date: date
+    balance: float | None
+    change: float | None
+
+
+class PeriodBalance(BaseModel):
+    currency: str
+    comparison_from: date
+    comparison_to: date
+    current: list[PeriodBalancePoint]
+    comparison: list[PeriodBalancePoint]

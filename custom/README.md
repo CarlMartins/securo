@@ -1,4 +1,6 @@
-# Personalizações de relatórios do Securo
+# Personalizações do Securo
+
+## Relatórios
 
 A referência comportamental é `custom/v0.16.6` em `47e32251`, que contém os cinco commits solicitados e o ajuste de nome de conta `e45a1232`. O checkout analisado é `custom/v0.19.0` em `0a6ac2d8`, quatro commits após a tag `v0.19.0`. Os cinco commits históricos não são ancestrais desse checkout. As especificações incorporam as decisões da migração e mantêm o contrato do fork antigo como referência histórica.
 
@@ -16,3 +18,11 @@ A versão atual tem diferenças que afetam a adaptação. A agregação financei
 - [Inventário e execução dos testes](tests/README.md)
 - [Cenários de regressão e decisões](tests/cenarios.md)
 - [Prompt para reimplementar em outra versão](prompts/reimplementar-relatorios.md)
+
+
+## Tela principal
+
+- [Contrato de período, contas e despesas pendentes](features/06-filtros-do-dashboard.md)
+- [Aceite de interface, regressões e referências visuais](tests/aceite-dashboard.md)
+- [Reimplementar o painel em outra versão](prompts/reimplementar-dashboard.md)
+- [Integração na v0.19.0](compatibilidade-v0.19.0.md#filtros-da-tela-principal)

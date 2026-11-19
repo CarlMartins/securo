@@ -37,9 +37,10 @@ export function ReportTransactionsDialog({ selection, onClose }: {
     t(`reports.${selection.group}`),
     selection.statuses.map(statusLabel).join(' + '),
   ].join(' · ')
-  const color = selection.group === 'income'
+  const amountColor = (value: number) => value > 0
     ? 'text-emerald-700 dark:text-emerald-400'
     : 'text-red-800 dark:text-red-500'
+  const color = amountColor(selection.group === 'income' ? 1 : -1)
   const signedProjection = selection.projected * (selection.group === 'income' ? 1 : -1)
   const money = (value: number) => mask(`${value > 0 ? '+' : ''}${formatCurrency(value, data?.currency ?? 'USD', locale)}`)
   const pages = Math.ceil((data?.total ?? 0) / PAGE_SIZE)
@@ -69,7 +70,7 @@ export function ReportTransactionsDialog({ selection, onClose }: {
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
-                    <p className={`font-semibold tabular-nums ${color}`}>{money(Number(item.amount))}</p>
+                    <p className={`font-semibold tabular-nums ${amountColor(Number(item.amount))}`}>{money(Number(item.amount))}</p>
                     <p className="text-xs text-muted-foreground">{statusLabel(item.status)}</p>
                   </div>
                 </li>
@@ -89,7 +90,7 @@ export function ReportTransactionsDialog({ selection, onClose }: {
             )}
             <div className="flex justify-between gap-3 font-semibold">
               <span>{t('reports.drilldown.total')}</span>
-              <span className={`tabular-nums ${color}`}>{money(Number(data.total_amount) + signedProjection)}</span>
+              <span className={`tabular-nums ${amountColor(Number(data.total_amount) + signedProjection)}`}>{money(Number(data.total_amount) + signedProjection)}</span>
             </div>
           </div>
         )}

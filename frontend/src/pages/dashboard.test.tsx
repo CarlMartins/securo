@@ -7,7 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { formatCurrency } from '@/lib/format'
 import { monthLabel } from '@/lib/month-utils'
 import { renderWithProviders, t } from '@/test/utils'
-import type { Account, DashboardSummary } from '@/types'
+import type { Account, DashboardPeriod, DashboardSummary } from '@/types'
 
 const layouts = vi.hoisted(() => ({
   saved: {} as Record<string, { id: string }[] | null>,
@@ -17,7 +17,8 @@ const layouts = vi.hoisted(() => ({
 const api = vi.hoisted(() => ({
   dashboard: {
     summary: vi.fn(),
-    spendingByCategory: vi.fn(),
+    period: vi.fn(),
+    balancePeriod: vi.fn(),
     balanceHistory: vi.fn(),
     balanceHistoryMonths: vi.fn(),
     projectedTransactions: vi.fn(),
@@ -28,6 +29,8 @@ const api = vi.hoisted(() => ({
   categoryGroups: { list: vi.fn(), listIncludingHidden: vi.fn() },
   accounts: { list: vi.fn() },
   assets: { list: vi.fn() },
+  timezones: { list: async () => ({ default: "America/Sao_Paulo" }) },
+  reports: { incomeExpenseTransactions: vi.fn() },
   currencies: { list: vi.fn() },
   mortgagePayments: { get: vi.fn() },
   goals: { summary: vi.fn() },
@@ -66,7 +69,11 @@ vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({ user: { preferences } }),
 }))
 
-const collectionFilter = vi.hoisted(() => ({ activeAccountIds: null as string[] | null, activeWalletIds: null as string[] | null }))
+const collectionFilter = vi.hoisted(() => ({
+  activeCollectionId: null as string | null,
+  activeAccountIds: null as string[] | null,
+  activeWalletIds: null as string[] | null,
+}))
 
 vi.mock('@/contexts/collection-filter-context', () => ({
   useCollectionFilter: () => collectionFilter,
@@ -148,15 +155,30 @@ const summary: DashboardSummary = {
   pending_shares_net: 0,
 }
 
+const emptyActivity: DashboardPeriod = {
+  currency: 'USD', posted_income: '0', pending_income: '0',
+  posted_expenses: '0', pending_expenses: '0', additional_projected_income: '0',
+  additional_projected_expenses: '0', spending: [], missing_fx_count: 0,
+  uncategorized_count: 0, uncategorized_amount: '0',
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.removeItem('securo.dashboard.range.local')
   layouts.saved = {}
   layouts.saves = []
   preferences.currency_display = 'USD'
+  collectionFilter.activeCollectionId = null
   collectionFilter.activeAccountIds = null
   collectionFilter.activeWalletIds = null
   api.dashboard.summary.mockResolvedValue(summary)
-  api.dashboard.spendingByCategory.mockResolvedValue([])
+  api.dashboard.period.mockResolvedValue(emptyActivity)
+  api.dashboard.balancePeriod.mockResolvedValue({
+    currency: 'USD', comparison_from: '2026-03-01', comparison_to: '2026-03-03',
+    current: [], comparison: [],
+  })
+  api.reports.incomeExpenseTransactions.mockResolvedValue({ items: [], total: 0, total_amount: 0, currency: 'USD' })
+  api.transactions.calendar.mockResolvedValue({ days: [], month: '2026-04', currency: 'USD' })
   api.dashboard.balanceHistory.mockResolvedValue({
     current: [],
     opening_balance: 0,
@@ -799,19 +821,19 @@ describe('Dashboard refresh button', () => {
 it('keeps a wallet-only Expenses drill-down empty instead of querying all accounts', async () => {
   collectionFilter.activeAccountIds = []
   collectionFilter.activeWalletIds = ['wallet-1']
-  const { user } = renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
-  await user.click(await screen.findByRole('button', { name: /Expenses/ }))
-  const panel = screen.getByRole('complementary')
-  expect(await within(panel).findByText(t('dashboard.drillDownEmpty'))).toBeInTheDocument()
-  expect(api.transactions.list.mock.calls.some(([params]) => params?.user_pnl_only === true)).toBe(false)
+  renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+  expect(await screen.findByRole('button', { name: /Expenses/ })).toBeDisabled()
+  expect(screen.getByText(t('dashboard.noAccountsInScope'))).toBeInTheDocument()
+  expect(api.transactions.list).not.toHaveBeenCalled()
+  expect(api.dashboard.period).not.toHaveBeenCalled()
 })
 
 
 it('identifies each category in its spending progress bar accessible name', async () => {
-  api.dashboard.spendingByCategory.mockResolvedValue([
-    { category_id: 'rent', category_name: 'Rent', projected_total: 450, total: 450 },
-    { category_id: 'food', category_name: 'Groceries', projected_total: 200, total: 200 },
-  ])
+  api.dashboard.period.mockResolvedValue({ ...emptyActivity, spending: [
+    { category_id: 'rent', category_name: 'Rent', projected_total: '450', total: '450' },
+    { category_id: 'food', category_name: 'Groceries', projected_total: '200', total: '200' },
+  ] })
   api.budgets.comparison.mockResolvedValue([
     { category_id: 'rent', budget_amount: 900, percentage_used: 50, projected_prev_month_amount: 0 },
     { category_id: 'food', budget_amount: 500, percentage_used: 40, projected_prev_month_amount: 0 },
@@ -845,7 +867,6 @@ describe('Dashboard arranged from the library', () => {
     expect(api.goals.summary).not.toHaveBeenCalled()
     expect(api.dashboard.balanceHistory).not.toHaveBeenCalled()
     expect(api.dashboard.balanceHistoryMonths).not.toHaveBeenCalled()
-    expect(api.dashboard.spendingByCategory).not.toHaveBeenCalled()
     expect(api.budgets.comparison).not.toHaveBeenCalled()
   })
 
@@ -875,5 +896,128 @@ describe('Dashboard arranged from the library', () => {
 
     await user.click(screen.getByRole('button', { name: t('library.done') }))
     expect(screen.queryByText(t('library.editingDashboard'))).not.toBeInTheDocument()
+  })
+})
+
+describe('custom dashboard period', () => {
+  const renderDashboard = (route: string) => renderWithProviders(
+    <TooltipProvider><DashboardPage /><LocationProbe /></TooltipProvider>,
+    { route },
+  )
+  const from = '2026-03-30'
+  const to = '2026-04-03'
+  const route = `/?from=${from}&to=${to}`
+
+  it('sums and highlights pending expenses, then opens the reconciled ledger', async () => {
+    collectionFilter.activeAccountIds = ['checking', 'card-a']
+    api.dashboard.period.mockResolvedValue({
+      ...emptyActivity, posted_expenses: '950', pending_expenses: '300',
+    })
+    const { user } = renderDashboard(route + '&account_id=checking,card-c')
+    const expenses = await screen.findByRole('button', { name: /Period expenses/ })
+    await waitFor(() => expect(expenses).toHaveTextContent(formatCurrency(1250, 'USD', 'en-US')))
+    expect(expenses).toHaveTextContent(t('dashboard.pendingExpenses', { amount: formatCurrency(300, 'USD', 'en-US') }))
+    expect(api.dashboard.period).toHaveBeenCalledWith({ from, to }, ['checking'])
+    expect(api.dashboard.balancePeriod).toHaveBeenCalledWith({ from, to }, ['checking'])
+    await user.click(expenses)
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(api.reports.incomeExpenseTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ group: 'expenses', source: { from, to }, accountIds: ['checking'] }), 1, 20,
+    ))
+    const url = within(dialog).getByRole('link', { name: t('reports.statementViewTransactions') }).getAttribute('href')!
+    expect(new URLSearchParams(url.split('?')[1]).get('account_id')).toBe('checking')
+    expect(new URLSearchParams(url.split('?')[1]).get('report_to')).toBe(to)
+    expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({ report_group: 'activity', page: 1, from, to }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(expenses).toHaveFocus())
+  })
+
+  it('navigates the calendar by month without changing the applied interval', async () => {
+    const { user } = renderDashboard(route + '&view=calendar')
+    await waitFor(() => expect(api.transactions.calendar).toHaveBeenCalledWith(expect.objectContaining({
+      month: '2026-03-01', observed_from: from, observed_to: to,
+    })))
+    const previous = screen.getByRole('button', { name: t('dashboard.previous') })
+    expect(previous).toBeDisabled()
+    const next = screen.getByRole('button', { name: t('dashboard.next') })
+    await user.click(next)
+    await waitFor(() => expect(api.transactions.calendar).toHaveBeenLastCalledWith(expect.objectContaining({
+      month: '2026-04-01', observed_from: from, observed_to: to,
+    })))
+    expect(next).toBeDisabled()
+    expect(screen.getByTestId('location-search')).toHaveTextContent(`from=${from}&to=${to}`)
+  })
+
+  it('applies the date draft and returns to the monthly view when cleared', async () => {
+    const { user } = renderDashboard('/?month=2026-04')
+    const picker = screen.getByRole('button', { name: t('dashboard.customPeriod') })
+    await user.click(picker)
+    const apply = () => screen.getByRole('button', { name: t('transactions.filtersBar.apply') })
+    await user.click(apply())
+    await waitFor(() => expect(api.dashboard.period).toHaveBeenLastCalledWith({
+      from: '2026-04-01', to: '2026-04-30',
+    }, undefined))
+    expect(screen.getByTestId('location-search')).toHaveTextContent('from=2026-04-01&to=2026-04-30')
+
+    await user.click(picker)
+    await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.reset') }))
+    await user.click(apply())
+    await waitFor(() => expect(screen.getByTestId('location-search')).not.toHaveTextContent('from='))
+    expect(screen.getByTestId('location-search')).toHaveTextContent('month=2026-04')
+  })
+
+  it('keeps account edits as a draft and restores the collection after clearing', async () => {
+    collectionFilter.activeAccountIds = ['checking', 'card-a']
+    const { user } = renderDashboard(route + '&account_id=checking')
+    await waitFor(() => expect(api.dashboard.period).toHaveBeenCalledWith({ from, to }, ['checking']))
+    const filterButton = screen.getByRole('button', { name: /^Filters/ })
+    await user.click(filterButton)
+    let dialog = screen.getByRole('dialog')
+    const otherAccount = await within(dialog).findByRole('checkbox', { name: 'Card A' })
+    await user.click(otherAccount)
+    await user.click(within(dialog).getByRole('button', { name: t('transactions.filtersBar.cancel') }))
+    expect(api.dashboard.period).not.toHaveBeenCalledWith({ from, to }, ['checking', 'card-a'])
+    expect(screen.getByTestId('location-search')).toHaveTextContent('account_id=checking')
+
+    await user.click(filterButton)
+    dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('checkbox', { name: 'Card A' })).not.toBeChecked()
+    await user.click(within(dialog).getByRole('button', { name: t('collections.clearFilter') }))
+    await user.click(within(dialog).getByRole('button', { name: t('transactions.filtersBar.apply') }))
+    await waitFor(() => expect(api.dashboard.period).toHaveBeenLastCalledWith({ from, to }, ['checking', 'card-a']))
+    expect(screen.getByTestId('location-search')).not.toHaveTextContent('account_id=')
+  })
+
+  it('restores the custom period and shifts both dates by one calendar month', async () => {
+    localStorage.setItem('securo.dashboard.range.local', 'from=2026-11-12&to=2026-12-12')
+    const { user } = renderDashboard('/')
+    await waitFor(() => expect(api.dashboard.period).toHaveBeenLastCalledWith({
+      from: '2026-11-12', to: '2026-12-12',
+    }, undefined))
+    await user.click(screen.getByRole('button', { name: t('dashboard.previousPeriod') }))
+    await waitFor(() => expect(api.dashboard.period).toHaveBeenLastCalledWith({
+      from: '2026-10-12', to: '2026-11-12',
+    }, undefined))
+    expect(localStorage.getItem('securo.dashboard.range.local')).toBe('from=2026-10-12&to=2026-11-12')
+  })
+
+  it('waits for a saved collection to resolve before requesting account activity', async () => {
+    collectionFilter.activeCollectionId = 'saved-collection'
+    renderDashboard(route + '&account_id=checking')
+    expect(await screen.findByText(t('common.loading'), { selector: '[role="status"]' })).toBeInTheDocument()
+    expect(api.dashboard.summary).not.toHaveBeenCalled()
+    expect(api.dashboard.period).not.toHaveBeenCalled()
+    expect(api.dashboard.balancePeriod).not.toHaveBeenCalled()
+    expect(api.transactions.list).not.toHaveBeenCalled()
+  })
+
+  it('never queries a wider scope after an empty collection intersection', async () => {
+    collectionFilter.activeAccountIds = ['checking']
+    renderDashboard(route + '&account_id=card-c')
+    expect(await screen.findByText(t('dashboard.noAccountsInScope'))).toBeInTheDocument()
+    expect(api.dashboard.summary).not.toHaveBeenCalled()
+    expect(api.dashboard.period).not.toHaveBeenCalled()
+    expect(api.dashboard.balancePeriod).not.toHaveBeenCalled()
+    expect(api.transactions.list).not.toHaveBeenCalled()
   })
 })

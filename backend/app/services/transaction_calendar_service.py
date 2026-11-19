@@ -27,6 +27,7 @@ from app.services.dashboard_service import (
 from app.services._query_filters import reporting_date_col, reporting_date_value
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.fx_rate_service import convert as fx_convert
+from app.services.report_contributions import ALL_STATUSES, load_contributions, select_contributions
 from app.services.recurring_transaction_service import (
     adjust_weekend_date,
     get_occurrences_in_range,
@@ -40,6 +41,7 @@ async def get_transaction_calendar(
     month: Optional[date] = None,
     account_ids: Optional[list[uuid.UUID]] = None,
     date_basis: Literal["reporting", "bank"] = "reporting",
+    observed_range: tuple[date, date] | None = None,
 ) -> TransactionCalendarResponse:
     """Build a read-only month-grid transaction calendar.
 
@@ -64,6 +66,12 @@ async def get_transaction_calendar(
 
     user = await session.get(User, user_id)
     primary_currency = user.primary_currency if user else get_settings().default_currency
+    if observed_range is not None:
+        return await _get_observed_calendar(
+            session, workspace_id, user_id, primary_currency, account_ids,
+            month_start, grid_start, grid_end, observed_range,
+        )
+
     accounting_mode = (
         await get_credit_card_accounting_mode(session)
         if date_basis == "reporting"
@@ -283,6 +291,74 @@ async def get_transaction_calendar(
         currency=primary_currency,
         account_ids=requested_account_ids,
         days=response_days,
+    )
+
+
+async def _get_observed_calendar(
+    session: AsyncSession, workspace_id: uuid.UUID, user_id: uuid.UUID, currency: str,
+    account_ids: list[uuid.UUID] | None, month: date, grid_start: date, grid_end: date,
+    observed_range: tuple[date, date],
+) -> TransactionCalendarResponse:
+    start, end = observed_range
+    first = max(start, month)
+    last = min(end, app_today(), _next_month(month) - timedelta(days=1))
+    days = {
+        day: TransactionCalendarDay(
+            date=day, in_month=day.month == month.month, ending_balance=0,
+            unavailable=not first <= day <= last,
+        )
+        for day in _date_range(grid_start, grid_end)
+    }
+    if first <= last:
+        mode = await get_credit_card_accounting_mode(session)
+        parts, _ = await load_contributions(
+            session, workspace_id, user_id, currency, mode,
+            start, min(end, app_today()), ALL_STATUSES, account_ids,
+        )
+        rows = select_contributions(
+            (part for part in parts if part.group != "investments"),
+            group=None, start=first, end=last,
+        )
+        for part, amount in rows.values():
+            day = days[part.day]
+            tx = part.transaction
+            value = float(abs(amount))
+            item = _actual_item(tx, part.day, value, False, False)
+            item.amount = value
+            item.currency = currency
+            if part.shared:
+                item = item.model_copy(update={
+                    "account_id": None, "account_name": None, "category_id": None,
+                    "category_name": None, "category_icon": None, "category_color": None,
+                })
+            day.items.append(item)
+            day.actual_count += 1
+            if amount > 0:
+                day.income += float(amount)
+                day.has_income = True
+            elif amount < 0:
+                day.expense += float(-amount)
+                day.has_expense = True
+
+        running = await _balance_at(
+            session, workspace_id, first - timedelta(days=1),
+            primary_currency_hint=currency, account_ids=account_ids,
+        )
+        deltas = await _daily_balance_deltas_by_date(
+            session, workspace_id, first, last + timedelta(days=1),
+            primary_currency_hint=currency, account_ids=account_ids,
+        )
+        for day in days.values():
+            if day.unavailable:
+                continue
+            running += deltas.get(day.date, 0.0)
+            day.ending_balance = round(running, 2)
+            day.actual_income = day.income = round(day.income, 2)
+            day.actual_expense = day.expense = round(day.expense, 2)
+
+    return TransactionCalendarResponse(
+        month=month.strftime("%Y-%m"), currency=currency,
+        account_ids=account_ids, days=list(days.values()),
     )
 
 

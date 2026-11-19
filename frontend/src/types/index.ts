@@ -280,6 +280,7 @@ export interface DescriptionSuggestion {
 }
 
 export interface Transaction {
+  report_date?: string | null
   report_amount?: number | string | null
   /** Every invoice this transaction settles — a payout net of fees
    *  settles several. Absent in a workspace without the module. */
@@ -1018,6 +1019,7 @@ export interface TransactionCalendarItem {
 export interface TransactionCalendarDay {
   date: string
   in_month: boolean
+  unavailable?: boolean
   ending_balance: number
   // Combined totals kept for backwards compatibility.
   income: number
@@ -1042,6 +1044,41 @@ export interface TransactionCalendarResponse {
   currency: string
   account_ids: string[] | null
   days: TransactionCalendarDay[]
+}
+
+export interface DashboardPeriod {
+  currency: string
+  posted_income: string
+  pending_income: string
+  posted_expenses: string
+  pending_expenses: string
+  additional_projected_income: string
+  additional_projected_expenses: string
+  spending: Array<{
+    category_id: string | null
+    category_name: string
+    category_color: string
+    category_icon: string
+    total: string
+    projected_total: string
+  }>
+  missing_fx_count: number
+  uncategorized_count: number
+  uncategorized_amount: string
+}
+
+export interface PeriodBalancePoint {
+  date: string
+  balance: number | null
+  change: number | null
+}
+
+export interface DashboardPeriodBalance {
+  currency: string
+  comparison_from: string
+  comparison_to: string
+  current: PeriodBalancePoint[]
+  comparison: PeriodBalancePoint[]
 }
 
 export interface DashboardSummary {

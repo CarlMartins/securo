@@ -40,11 +40,11 @@ export function CollectionFilterProvider({ children }: { children: ReactNode }) 
 
   // If the active collection was deleted elsewhere, fall back to "all".
   useEffect(() => {
-    if (activeCollectionId && collections.length > 0 && !activeCollection) {
+    if (activeCollectionId && data !== undefined && !activeCollection) {
       setActiveCollectionId(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCollectionId, collections, activeCollection])
+  }, [activeCollectionId, data, activeCollection])
 
   const value: CollectionFilterValue = {
     collections,

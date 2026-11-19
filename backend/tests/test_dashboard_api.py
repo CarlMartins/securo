@@ -663,6 +663,15 @@ async def test_projected_transactions_account_id_and_range(client, auth_headers,
     assert both.status_code == 200
     assert {p["description"] for p in both.json()} == {"Assinatura A", "Assinatura B"}
 
+    plural = await client.get(
+        "/api/dashboard/projected-transactions",
+        params={"month": next_month, "account_ids": [second_account_id]},
+        headers=auth_headers,
+    )
+    assert plural.status_code == 200
+    assert plural.json()
+    assert {row["account_id"] for row in plural.json()} == {second_account_id}
+
     # No params → defaults to the current month, where nothing is projected.
     defaults = await client.get("/api/dashboard/projected-transactions", headers=auth_headers)
     assert defaults.status_code == 200

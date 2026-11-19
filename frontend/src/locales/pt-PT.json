@@ -816,6 +816,20 @@
     "passkeyNeverUsed": "Nunca"
   },
   "dashboard": {
+    "customPeriod": "Período personalizado",
+    "periodIncome": "Receitas do período",
+    "periodExpenses": "Despesas do período",
+    "pendingExpenses": "Desse total, {{amount}} pendentes",
+    "availableBalanceToday": "Saldo disponível hoje",
+    "selectedPeriod": "Período selecionado",
+    "nextPeriod": "Próximo período",
+    "previousPeriod": "Período anterior",
+    "settledBalanceCaption": "Movimentos efetivados pela data bancária",
+    "noAccountsInScope": "Nenhuma conta nesta seleção.",
+    "periodMissingFx": "Algumas transações ficaram fora dos totais porque a taxa de câmbio está indisponível.",
+    "periodSavingsCaption": "do rendimento do período foi poupado",
+    "periodResult": "Resultado do período",
+    "budgetMonthlyScope": "O ritmo do orçamento está disponível na vista mensal com todas as contas.",
     "title": "Painel",
     "greetingMorning": "Bom dia",
     "greetingAfternoon": "Boa tarde",
@@ -2165,6 +2179,7 @@
     "propertyEquity": "Valor {{value}} · Dívida {{debt}} · Capital próprio {{equity}}"
   },
   "reports": {
+    "activity": "Movimentos",
     "customFilters": {
       "status": "Estado da transação"
     },

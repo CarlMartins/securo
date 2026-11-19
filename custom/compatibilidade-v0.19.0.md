@@ -66,3 +66,13 @@ As decisões funcionais de correspondência exata, aritmética decimal, preserva
 ## Reimplementação independente
 
 A branch `reimplementacao/v0.19.0` implementa os contratos e mantém a integração com os componentes nativos. A [matriz de aceite da execução](testes-reimplementacao-v0.19.0.md) registra critérios, evidências, compatibilidade da API, comparação visual e comandos de reprodução. Os resultados e a classificação acima continuam sendo a linha de base do upstream.
+
+## Filtros da tela principal
+
+A customização foi desenvolvida a partir de `d8dfe6c8` na linha 0.19.0. O comportamento independente de versão está na [especificação do painel](features/06-filtros-do-dashboard.md).
+
+- O cabeçalho mantém `month` para o modo mensal e usa `from`, `to` e `account_id` na URL. O último parâmetro contém IDs separados por vírgula. As consultas API recebem `account_ids` repetidos.
+- `GET /api/dashboard/period` recebe `month` ou o par `from/to` e entrega valores observados por status, categorias e projeções adicionais no modo mensal. O serviço usa a mesma seleção de contribuições de Receitas vs Despesas. Os valores novos são decimais serializados conforme os schemas FastAPI.
+- `GET /api/dashboard/balance-period` recebe `from/to` e devolve as duas séries diárias, com data ISO, saldo e variação. `GET /api/transactions/calendar` aceita `observed_from/observed_to` ao consultar um mês dentro do intervalo. As células indisponíveis são marcadas no payload.
+- A lista usa o contexto `report_group=activity` da página e da API nativas de Transações para contribuições de receita e despesa. `report_date` expõe a data contábil nas respostas com esse contexto. As rotas mensais existentes continuam disponíveis para seus consumidores. As projeções recorrentes do painel aceitam `account_ids` sem alterar o filtro singular da rota. A implementação não requer migração de banco.
+- O [aceite do painel](tests/aceite-dashboard.md) vincula os cenários a capturas e testes. Uma versão futura deve adaptar transporte, paginação e componentes sem mudar os resultados do contrato.

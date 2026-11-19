@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { WorkspaceContext } from '@/contexts/workspace-context'
+import { useDashboardBudget } from '@/hooks/use-dashboard-budget'
+import { useState, useEffect, useContext, useMemo, useRef, type ReactNode } from 'react'
 import { getAccountLabel, getAccountName, sortAccountsByAbsoluteBalance, sumAccountBalances } from '@/lib/account-utils'
 import { currentMonth, shiftMonth, monthLastDay, monthLabel, monthRange } from '@/lib/month-utils'
 import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { dashboard, transactions, budgets, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi, payees as payeesApi, rules as rulesApi } from '@/lib/api'
+import { dashboard, transactions, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi, payees as payeesApi, rules as rulesApi } from '@/lib/api'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { toast } from 'sonner'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -20,6 +22,13 @@ import {
 } from '@/components/ui/select'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { DateRangePicker } from '@/components/ui/date-range-picker'
+import { ReportFilters } from '@/components/reports/ReportFilters'
+import { ReportTransactionsDialog } from '@/components/reports/ReportTransactionsDialog'
+import { DashboardPeriodBalanceChart } from '@/components/dashboard-period-balance'
+import { formatDateRange } from '@/lib/date-range-format'
+import { addMonthsIso } from '@/lib/report-period'
+import { REPORT_STATUSES, type ReportSelection } from '@/lib/report-selection'
 import { MonthPicker } from '@/components/ui/monthpicker'
 import {
   Table,
@@ -93,10 +102,23 @@ function parseHashtags(notes: string | null): string[] {
   return matches ?? []
 }
 
-const MONTH_REGEX = /^\d{4}-\d{2}$/
+const MONTH_REGEX = /^\d{4}-(?:0[1-9]|1[0-2])$/
 const MONTH_STRING_LENGTH = 7
 const COMPARISON_MONTH_PARAM = 'comparison_month'
 const EMPTY_COMPARISON_MONTHS: string[] = []
+const EMPTY_ACCOUNT_SCOPE: string[] = []
+
+function readDashboardRange(params: URLSearchParams) {
+  const from = params.get('from') ?? ''
+  const to = params.get('to') ?? ''
+  const valid = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value < '0002-01-01' || value > '9998-12-31') return false
+    const date = new Date(value + 'T00:00:00Z')
+    return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value
+  }
+  if (!valid(from) || !valid(to) || from > to || addMonthsIso(from, 120) < to) return null
+  return { from, to }
+}
 
 function parseMonthFromParams(params: URLSearchParams): string | null {
   const monthParam = params.get('month')
@@ -164,6 +186,15 @@ export default function DashboardPage() {
   const [selectedMonth, setSelectedMonth] = useState<string>(() => {
     return parseMonthFromParams(searchParams) ?? currentMonth()
   })
+  const workspace = useContext(WorkspaceContext)
+  const workspaceLoading = workspace?.isLoading ?? false
+  const storageKey = 'securo.dashboard.range.' + (workspace?.current?.id ?? 'local')
+  const customRange = readDashboardRange(searchParams)
+  useEffect(() => {
+    if (!workspaceLoading && customRange) localStorage.setItem(storageKey, new URLSearchParams(customRange).toString())
+  }, [storageKey, workspaceLoading, customRange?.from, customRange?.to])
+  const [reportSelection, setReportSelection] = useState<ReportSelection | null>(null)
+  const reportTrigger = useRef<HTMLElement | null>(null)
   const [drillDown, setDrillDown] = useState<DrillDownFilter | null>(null)
   // Transactions section view, mirroring the transactions page: the choice
   // lives in the URL so the section can be refreshed, bookmarked or shared.
@@ -196,11 +227,21 @@ export default function DashboardPage() {
 
   // Sync selectedMonth and the transactions view back to URL
   useEffect(() => {
+    if (workspaceLoading) return
     const params = new URLSearchParams(searchParamsRef.current.toString())
+    if (!params.has('month') && !params.has('from') && !params.has('to')) {
+      const saved = readDashboardRange(new URLSearchParams(localStorage.getItem(storageKey) ?? ''))
+      if (saved) {
+        params.set('from', saved.from)
+        params.set('to', saved.to)
+      }
+    }
     if (selectedMonth) {
       params.set('month', selectedMonth)
-      params.delete('from')
-      params.delete('to')
+      if (!readDashboardRange(params)) {
+        params.delete('from')
+        params.delete('to')
+      }
     } else {
       params.delete('month')
     }
@@ -215,7 +256,7 @@ export default function DashboardPage() {
     }
 
     setSearchParams(params, { replace: true })
-  }, [selectedMonth, txViewMode, calendarSelectedDate, setSearchParams])
+  }, [selectedMonth, txViewMode, calendarSelectedDate, setSearchParams, storageKey, workspaceLoading])
   const [editingTx, setEditingTx] = useState<Transaction | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [createRuleOpen, setCreateRuleOpen] = useState(false)
@@ -228,26 +269,74 @@ export default function DashboardPage() {
   const { from: monthStart, to: monthEnd } = monthRange(selectedMonth)
   const monthParam = monthStart
   const uiLocale = i18n.resolvedLanguage ?? i18n.language
-  const monthLabelStr = monthLabel(selectedMonth, uiLocale)
+  const periodFrom = customRange?.from ?? monthStart
+  const periodTo = customRange?.to ?? monthEnd
+  const monthLabelStr = customRange
+    ? formatDateRange(periodFrom, periodTo, dateLocale)
+    : monthLabel(selectedMonth, uiLocale)
+  const [calendarMonth, setCalendarMonth] = useState('')
+  const firstCalendarMonth = periodFrom.slice(0, 7)
+  const lastCalendarMonth = periodTo.slice(0, 7)
+  const requestedCalendarMonth = calendarMonth || calendarSelectedDate.slice(0, 7)
+  const viewedCalendarMonth = customRange
+    ? (requestedCalendarMonth >= firstCalendarMonth && requestedCalendarMonth <= lastCalendarMonth ? requestedCalendarMonth : firstCalendarMonth)
+    : selectedMonth
+  const viewedCalendarStart = viewedCalendarMonth + '-01'
+
+  const handleRangeChange = (from: string, to: string) => {
+    const next = new URLSearchParams(searchParams)
+    if (from && to) {
+      next.set('from', from)
+      next.set('to', to)
+    } else {
+      localStorage.removeItem(storageKey)
+      next.delete('from')
+      next.delete('to')
+    }
+    next.delete('day')
+    setCalendarMonth('')
+    setCalendarSelectedDate('')
+    setSearchParams(next)
+  }
+
+  const { activeCollectionId, activeAccountIds: resolvedCollectionAccounts, activeWalletIds: collectionWalletIds } = useCollectionFilter()
+  const collectionLoading = Boolean(activeCollectionId && resolvedCollectionAccounts === null)
+  const collectionAccountIds = collectionLoading ? EMPTY_ACCOUNT_SCOPE : resolvedCollectionAccounts
+  const accountParam = searchParams.get('account_id')
+  const selectedAccountIds = useMemo(() => [...new Set((accountParam ?? '').split(',').filter(Boolean))], [accountParam])
+  const activeAccountIds = useMemo(() => selectedAccountIds.length
+    ? selectedAccountIds.filter((id) => collectionAccountIds === null || collectionAccountIds.includes(id))
+    : collectionAccountIds, [collectionAccountIds, selectedAccountIds])
+  const activeWalletIds = selectedAccountIds.length ? null : collectionWalletIds
+  const acctIds = activeAccountIds ?? undefined
+  const walletIds = activeWalletIds ?? undefined
+  const noAccounts = activeAccountIds !== null && activeAccountIds.length === 0
+  const accountScope = activeAccountIds?.join(',') ?? null
+
+  const [txPage, setTxPage] = useState(1)
+  const [txSortDesc, setTxSortDesc] = useState(true)
+  const [txPerPage, setTxPerPage] = useState<number>(() => {
+    try {
+      const stored = Number(localStorage.getItem('securo.dashboard.pageSize'))
+      return [10, 20, 50, 100].includes(stored) ? stored : 10
+    } catch {
+      return 10
+    }
+  })
+  useEffect(() => {
+    setTxPage(1)
+    setReportSelection(null)
+    setDrillDown(null)
+  }, [periodFrom, periodTo, accountScope])
 
   const handleMonthChange = (newMonth: string) => {
     setSelectedMonth(newMonth)
   }
 
-  // Active Collection filter (issue #105): scope dashboard cards to its
-  // accounts. undefined when "All accounts".
-  const { activeAccountIds, activeWalletIds } = useCollectionFilter()
-  const acctIds = activeAccountIds ?? undefined
-  const walletIds = activeWalletIds ?? undefined
-  // A wallet-only collection (active, but with zero accounts) has no account
-  // data — skip the account-only cards so they render empty instead of
-  // silently falling back to "all accounts".
-  const noAccounts = activeAccountIds !== null && activeAccountIds.length === 0
-
   const { data: comparisonMonthOptions, isLoading: comparisonMonthsLoading } = useQuery({
     queryKey: ['dashboard', 'balance-history-months', activeAccountIds],
     queryFn: () => dashboard.balanceHistoryMonths(acctIds),
-    enabled: !noAccounts && shows('balance-flow'),
+    enabled: !customRange && !noAccounts && shows('balance-flow'),
     staleTime: 60_000,
   })
   const availableComparisonMonths = comparisonMonthOptions ?? EMPTY_COMPARISON_MONTHS
@@ -310,17 +399,25 @@ export default function DashboardPage() {
   }
 
   const { data: summary, isLoading: summaryLoading, isFetching: summaryFetching } = useQuery({
-    queryKey: ['dashboard', 'summary', selectedMonth, activeAccountIds, activeWalletIds],
-    queryFn: () => dashboard.summary(monthParam, undefined, acctIds, walletIds),
-    enabled: shows('overview') || shows('uncategorized'),
+    queryKey: ['dashboard', 'summary', selectedMonth, activeAccountIds, activeWalletIds, ...(customRange ? ['today'] : [])],
+    queryFn: () => dashboard.summary(customRange ? undefined : monthParam, undefined, acctIds, walletIds),
+    enabled: shows('overview') && (!noAccounts || Boolean(walletIds?.length)),
   })
-
-  const { data: spending, isLoading: spendingLoading } = useQuery({
-    queryKey: ['dashboard', 'spending', selectedMonth, activeAccountIds],
-    queryFn: () => dashboard.spendingByCategory(monthParam, acctIds),
-    enabled: !noAccounts && shows('spending-by-category'),
+  const {
+    data: activity, isLoading: activityLoading, isError: activityError, isFetching: activityFetching, refetch: refetchActivity,
+  } = useQuery({
+    queryKey: ['dashboard', 'period', periodFrom, periodTo, Boolean(customRange), activeAccountIds],
+    queryFn: () => dashboard.period(customRange ?? { month: monthParam }, acctIds),
+    enabled: !noAccounts && (shows('overview') || shows('uncategorized') || shows('spending-by-category')
+      || shows('spending-distribution') || shows('month-result') || shows('spending-pace')),
   })
-
+  const {
+    data: rangeBalance, isLoading: rangeBalanceLoading, isError: rangeBalanceError,
+  } = useQuery({
+    queryKey: ['dashboard', 'balance-period', periodFrom, periodTo, activeAccountIds],
+    queryFn: () => dashboard.balancePeriod({ from: periodFrom, to: periodTo }, acctIds),
+    enabled: Boolean(customRange) && !noAccounts && shows('balance-flow'),
+  })
 
   const { data: balanceHistory, isLoading: balanceHistoryLoading } = useQuery({
     queryKey: ['dashboard', 'balance-history', selectedMonth, activeAccountIds, comparisonMonths],
@@ -329,31 +426,33 @@ export default function DashboardPage() {
       acctIds,
       comparisonMonths.length > 0 ? comparisonMonths.map((value) => `${value}-01`) : undefined,
     ),
-    enabled: !noAccounts && !comparisonMonthsLoading && shows('balance-flow'),
+    enabled: !customRange && !noAccounts && !comparisonMonthsLoading && shows('balance-flow'),
   })
 
-  const { data: currentMonthTxs, isLoading: currentTxLoading } = useQuery({
-    queryKey: ['transactions', 'cumulative', selectedMonth, activeAccountIds],
-    queryFn: () => transactions.list({
-      from: monthStart,
-      to: monthEnd,
-      limit: 500,
-      exclude_transfers: true,
-      account_ids: acctIds,
+  const { data: currentMonthTxs, isLoading: currentTxLoading, isError: currentTxError } = useQuery({
+    queryKey: ['transactions', 'cumulative', periodFrom, periodTo, activeAccountIds,
+      customRange ? [txPage, txPerPage, txSortDesc] : null],
+    queryFn: () => transactions.list(customRange ? {
+      from: periodFrom, to: periodTo, account_ids: acctIds,
+      report_group: 'activity', report_from: periodFrom, report_to: periodTo,
+      sort_by: 'date', sort_dir: txSortDesc ? 'desc' : 'asc', page: txPage, limit: txPerPage,
+    } : {
+      from: monthStart, to: monthEnd, limit: 500, exclude_transfers: true, account_ids: acctIds,
     }),
-    enabled: !noAccounts && shows('transactions'),
+    enabled: !noAccounts && shows('transactions') && (!customRange || txViewMode === 'list'),
   })
 
   // Same month grid the transactions page renders, scoped to the active
   // collection's accounts. Only fetched while the calendar is on screen.
   const calendarAccountIds = acctIds && acctIds.length > 0 ? acctIds : undefined
-  const { data: calendarData, isLoading: calendarLoading } = useQuery({
-    queryKey: ['transactions', 'calendar', selectedMonth, activeAccountIds, calendarDateBasis],
+  const { data: calendarData, isLoading: calendarLoading, isError: calendarError } = useQuery({
+    queryKey: ['transactions', 'calendar', viewedCalendarMonth, activeAccountIds, customRange ? [periodFrom, periodTo] : calendarDateBasis],
     enabled: txViewMode === 'calendar' && !noAccounts && shows('transactions'),
     queryFn: () => transactions.calendar({
-      month: monthStart,
+      month: viewedCalendarStart,
       account_ids: calendarAccountIds,
-      date_basis: calendarDateBasis,
+      date_basis: customRange ? 'reporting' : calendarDateBasis,
+      ...(customRange ? { observed_from: periodFrom, observed_to: periodTo } : {}),
     }),
   })
 
@@ -370,16 +469,12 @@ export default function DashboardPage() {
   }, [allGroups])
 
   const { data: projectedTxs, isLoading: projectedTxLoading } = useQuery({
-    queryKey: ['dashboard', 'projected-transactions', selectedMonth],
-    queryFn: () => dashboard.projectedTransactions({ month: monthParam }),
-    enabled: shows('transactions'),
+    queryKey: ['dashboard', 'projected-transactions', selectedMonth, activeAccountIds],
+    queryFn: () => dashboard.projectedTransactions({ month: monthParam, account_ids: acctIds }),
+    enabled: !customRange && !noAccounts && shows('transactions'),
   })
 
-  const { data: budgetComparison } = useQuery({
-    queryKey: ['budgets', 'comparison', selectedMonth],
-    queryFn: () => budgets.comparison(monthParam),
-    enabled: shows('spending-by-category'),
-  })
+  const { rows: budgetComparison } = useDashboardBudget(selectedMonth, customRange, !noAccounts && shows('spending-by-category'))
 
   const { data: categoriesList } = useQuery({
     queryKey: ['categories'],
@@ -570,71 +665,71 @@ export default function DashboardPage() {
     .filter((a) => (activeAccountIds ? activeAccountIds.includes(a.id) : true) && a.type !== 'credit_card' && a.type !== 'loan')
     .reduce((sum, a) => sum + Number(a.balance_primary ?? a.current_balance), 0)
 
-  // Savings rate & projection
-  const income = Number(summary?.monthly_income_primary ?? summary?.monthly_income ?? 0)
-  const expenses = Number(summary?.monthly_expenses_primary ?? summary?.monthly_expenses ?? 0)
-  // What the month is still expected to close at, once recurring entries that
-  // have not posted yet are counted. Rendered only when it differs from the
-  // realised figure, so a month with nothing pending stays quiet.
-  const projectedIncome = Number(summary?.projected_income_primary ?? summary?.projected_income ?? income)
-  const projectedExpenses = Number(summary?.projected_expenses_primary ?? summary?.projected_expenses ?? expenses)
+  // Observed activity includes recorded pending rows; the monthly forecast
+  // is the additional, deduplicated amount beyond those rows.
+  const income = Number(activity?.posted_income ?? 0) + Number(activity?.pending_income ?? 0)
+  const expenses = Number(activity?.posted_expenses ?? 0) + Number(activity?.pending_expenses ?? 0)
+  const pendingExpenses = Number(activity?.pending_expenses ?? 0)
+  const projectedIncome = income + Number(activity?.additional_projected_income ?? 0)
+  const projectedExpenses = expenses + Number(activity?.additional_projected_expenses ?? 0)
   const savingsRate = income > 0 ? ((income - expenses) / income) * 100 : 0
-  const isCurrentMonth = selectedMonth === currentMonth()
+  const isCurrentMonth = !customRange && selectedMonth === currentMonth()
   const daysElapsed = isCurrentMonth ? new Date().getDate() : monthLastDay(selectedMonth)
   const daysInMonth = monthLastDay(selectedMonth)
-  const projectedSpend = expenses > 0 && isCurrentMonth && daysElapsed > 0
-    ? (expenses / daysElapsed) * daysInMonth
+  const postedExpenses = Number(activity?.posted_expenses ?? 0)
+  const projectedSpend = postedExpenses > 0 && isCurrentMonth && daysElapsed > 0
+    ? (postedExpenses / daysElapsed) * daysInMonth
     : null
 
-  // Uncategorized data
-  const uncategorizedCount = summary?.pending_categorization ?? 0
-  const uncategorizedAmount = summary?.pending_categorization_amount ?? 0
+  const uncategorizedCount = activity?.uncategorized_count ?? 0
+  const uncategorizedAmount = Number(activity?.uncategorized_amount ?? 0)
+  const activityCurrency = activity?.currency ?? primaryCurrency
+
+  const openPeriodDetail = (
+    trigger: HTMLElement, group: ReportSelection['group'], label: string, category?: string, projected = 0,
+  ) => {
+    reportTrigger.current = trigger
+    setReportSelection({
+      source: { from: periodFrom, to: periodTo },
+      range: { from: periodFrom, to: periodTo },
+      group, category, label, projected, statuses: REPORT_STATUSES, accountIds: acctIds,
+    })
+  }
 
   const [catSortDesc, setCatSortDesc] = useState(true)
 
-  // Merged category bars data
   const mergedCategories = useMemo(() => {
-    if (!spending) return []
-    const budgetMap = new Map<string, (typeof budgetComparison extends (infer T)[] | undefined ? T : never)>()
-    if (budgetComparison) {
-      for (const b of budgetComparison) {
-        budgetMap.set(b.category_id, b)
-      }
-    }
-    return spending
-      .filter(s => s.category_id !== null)
+    if (!activity) return []
+    const budgetMap = new Map(budgetComparison.map((budget) => [budget.category_id, budget]))
+    return activity.spending
+      .filter((row) => Number(row.projected_total) > 0)
       .map(s => {
         const budget = s.category_id ? budgetMap.get(s.category_id) : undefined
-        // The category widget must show the same spend set as its drill-down:
-        // settled transactions plus pending/future rows and recurring
-        // projections. The API keeps `total` as settled-only for callers that
-        // need the actual/forecast split, while `projected_total` is the
-        // user-visible all-in amount.
-        const actual = s.projected_total
-        const prevAmount = budget ? Number(budget.projected_prev_month_amount) : 0
+        const actual = Number(s.total)
+        const prevAmount = budget && !customRange && activeAccountIds === null ? Number(budget.projected_prev_month_amount) : 0
         let momPct: number | null = null
         if (prevAmount > 0) {
           momPct = ((actual - prevAmount) / prevAmount) * 100
-        } else if (actual > 0) {
+        } else if (budget && !customRange && activeAccountIds === null && actual > 0) {
           momPct = 100
         }
         return {
-          category_id: s.category_id!,
+          category_id: s.category_id,
           category_name: s.category_name,
           category_icon: s.category_icon,
           category_color: s.category_color,
           actual,
+          projected: Number(s.projected_total),
           budget_amount: budget ? Number(budget.budget_amount) : null,
-          percentage_used: budget?.percentage_used ?? null,
+          percentage_used: budget && Number(budget.budget_amount) > 0
+            ? customRange || activeAccountIds !== null ? actual / Number(budget.budget_amount) * 100 : budget.percentage_used
+            : null,
           momPct,
         }
       })
       .sort((a, b) => catSortDesc ? b.actual - a.actual : a.actual - b.actual)
-  }, [spending, budgetComparison, catSortDesc])
+  }, [activity, budgetComparison, catSortDesc, customRange, activeAccountIds])
 
-  const [txPage, setTxPage] = useState(1)
-  const [txSortDesc, setTxSortDesc] = useState(true)
-  useEffect(() => setTxPage(1), [selectedMonth])
 
   type DisplayRow = {
     key: string
@@ -667,19 +762,11 @@ export default function DashboardPage() {
     splitSource: Transaction | null
   }
 
-  const [txPerPage, setTxPerPage] = useState<number>(() => {
-    try {
-      const stored = localStorage.getItem('securo.dashboard.pageSize')
-      return stored ? Number(stored) : 10
-    } catch {
-      return 10
-    }
-  })
   const allDisplayRows = useMemo(() => {
     const rows: DisplayRow[] = []
     for (const tx of currentMonthTxs?.items ?? []) {
       const isShared = !!tx.is_shared
-      const displayAmount =
+      const displayAmount = tx.report_amount != null ? Math.abs(Number(tx.report_amount)) :
         isShared && tx.viewer_share != null ? Number(tx.viewer_share) : Number(tx.amount)
       const groupId = tx.group_id ?? null
       // Owner-side share: backend populates viewer_share for owners
@@ -694,11 +781,11 @@ export default function DashboardPage() {
       rows.push({
         key: tx.id,
         description: tx.description,
-        date: tx.date,
+        date: tx.report_date ?? tx.date,
         type: tx.type,
         amount: displayAmount,
-        amountPrimary: tx.amount_primary != null ? Number(tx.amount_primary) : null,
-        currency: tx.currency,
+        amountPrimary: tx.report_amount == null && tx.amount_primary != null ? Number(tx.amount_primary) : null,
+        currency: tx.report_amount != null ? activityCurrency : tx.currency,
         categoryIcon: tx.category?.icon ?? null,
         categoryName: tx.category?.name ?? null,
         categoryColor: tx.category?.color ?? null,
@@ -714,11 +801,12 @@ export default function DashboardPage() {
         isIgnored: tx.is_ignored,
         installmentNumber: tx.installment_number,
         totalInstallments: tx.total_installments,
-        showPendingBadge: shouldShowPendingBadge(tx),
+        showPendingBadge: tx.report_amount != null ? tx.status === 'pending' : shouldShowPendingBadge(tx),
         splitSource: isSplitByCategory(tx) ? tx : null,
       })
     }
     for (const pt of projectedTxs ?? []) {
+      if (activeAccountIds && (!pt.account_id || !activeAccountIds.includes(pt.account_id))) continue
       // A split template's occurrence shows its parts like a split row.
       const projectedSplit = projectedSplitSource(pt) as Transaction | null
       rows.push({
@@ -750,10 +838,14 @@ export default function DashboardPage() {
     }
     rows.sort((a, b) => txSortDesc ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date))
     return rows
-  }, [currentMonthTxs, projectedTxs, txSortDesc, groupNameById])
+  }, [currentMonthTxs, projectedTxs, txSortDesc, groupNameById, activityCurrency, activeAccountIds])
 
-  const txTotalPages = Math.ceil(allDisplayRows.length / txPerPage)
-  const pagedRows = allDisplayRows.slice((txPage - 1) * txPerPage, txPage * txPerPage)
+  const txCount = customRange ? currentMonthTxs?.total ?? 0 : allDisplayRows.length
+  const txTotalPages = Math.ceil(txCount / txPerPage)
+  const pagedRows = customRange ? allDisplayRows : allDisplayRows.slice((txPage - 1) * txPerPage, txPage * txPerPage)
+  useEffect(() => {
+    if (txTotalPages > 0 && txPage > txTotalPages) setTxPage(txTotalPages)
+  }, [txPage, txTotalPages])
   const txListLoading = currentTxLoading || projectedTxLoading
 
   // Savings rate display
@@ -776,6 +868,12 @@ export default function DashboardPage() {
     activeWalletIds,
     noAccounts,
     currency: userCurrency,
+    customPeriod: Boolean(customRange),
+    range: customRange,
+    activity,
+    activityLoading,
+    activityError,
+    refreshActivity: () => void refetchActivity(),
   }
 
   // What each widget shows; the grid places them as this person arranged them.
@@ -796,7 +894,7 @@ export default function DashboardPage() {
       <div className="@container bg-card rounded-xl border border-border shadow-sm px-5 pt-5 pb-4">
         {/* Available balance in checking/savings accounts */}
         <div className="pb-4 mb-4 border-b border-border">
-          <p className="text-xs font-semibold text-muted-foreground mb-1">{t('dashboard.availableBalance')}</p>
+          <p className="text-xs font-semibold text-muted-foreground mb-1">{t(customRange ? 'dashboard.availableBalanceToday' : 'dashboard.availableBalance')}</p>
           {summaryLoading || accountsUnavailable ? (
             <Skeleton className="h-9 w-40" />
           ) : (
@@ -871,30 +969,35 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {activityError && <p className="mb-3 text-sm text-destructive" role="alert">{t('common.error')}</p>}
+        {Boolean(activity?.missing_fx_count) && (
+          <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">{t('dashboard.periodMissingFx')}</p>
+        )}
+
         {/* Secondary indicators */}
         <div className="grid grid-cols-2 @xl:grid-cols-4 gap-x-5 gap-y-4">
           {/* Income */}
           <button
             type="button"
-            className="min-w-0 text-left cursor-pointer hover:opacity-70 transition-opacity"
-            onClick={() => setDrillDown({
-              title: t('dashboard.drillDownIncome', { month: monthLabelStr }),
-              type: 'credit',
-              from: monthStart,
-              to: monthEnd,
-            })}
+            className="min-w-0 text-left enabled:cursor-pointer enabled:hover:opacity-70 transition-opacity"
+            disabled={!activity || (income === 0 && projectedIncome === 0)}
+            onClick={(event) => openPeriodDetail(event.currentTarget, 'income',
+              t('dashboard.drillDownIncome', { month: monthLabelStr }), undefined, projectedIncome - income,
+            )}
           >
-            <p className="text-xs font-medium text-muted-foreground mb-1 min-h-[16px] flex items-center">{t('dashboard.monthlyIncome')}</p>
-            {summaryLoading ? (
+            <p className="text-xs font-medium text-muted-foreground mb-1 min-h-[16px] flex items-center">{t(customRange ? 'dashboard.periodIncome' : 'dashboard.monthlyIncome')}</p>
+            {activityLoading ? (
               <Skeleton className="h-6 w-20" />
+            ) : activityError ? (
+              <span>—</span>
             ) : (
               <>
                 <p className="text-xl font-bold tabular-nums text-emerald-600">
-                  +{mask(formatCurrency(income, primaryCurrency, locale))}
+                  +{mask(formatCurrency(income, activityCurrency, locale))}
                 </p>
                 {Math.abs(projectedIncome - income) >= 0.01 && (
                   <p className="text-xs text-muted-foreground tabular-nums mt-1">
-                    {t('dashboard.projectedIncome')} {mask(formatCurrency(projectedIncome, primaryCurrency, locale))}
+                    {t('dashboard.projectedIncome')} {mask(formatCurrency(projectedIncome, activityCurrency, locale))}
                   </p>
                 )}
               </>
@@ -904,25 +1007,30 @@ export default function DashboardPage() {
           {/* Expenses */}
           <button
             type="button"
-            className="relative min-w-0 text-left cursor-pointer hover:opacity-70 transition-opacity before:content-[''] before:hidden @xl:before:block before:absolute before:-left-2.5 before:top-1.5 before:bottom-1.5 before:w-px before:bg-border"
-            onClick={() => setDrillDown({
-              title: t('dashboard.drillDownExpenses', { month: monthLabelStr }),
-              type: 'debit',
-              from: monthStart,
-              to: monthEnd,
-            })}
+            className="relative min-w-0 text-left enabled:cursor-pointer enabled:hover:opacity-70 transition-opacity before:content-[''] before:hidden @xl:before:block before:absolute before:-left-2.5 before:top-1.5 before:bottom-1.5 before:w-px before:bg-border"
+            disabled={!activity || (expenses === 0 && projectedExpenses === 0)}
+            onClick={(event) => openPeriodDetail(event.currentTarget, 'expenses',
+              t('dashboard.drillDownExpenses', { month: monthLabelStr }), undefined, projectedExpenses - expenses,
+            )}
           >
-            <p className="text-xs font-medium text-muted-foreground mb-1 min-h-[16px] flex items-center">{t('dashboard.monthlyExpenses')}</p>
-            {summaryLoading ? (
+            <p className="text-xs font-medium text-muted-foreground mb-1 min-h-[16px] flex items-center">{t(customRange ? 'dashboard.periodExpenses' : 'dashboard.monthlyExpenses')}</p>
+            {activityLoading ? (
               <Skeleton className="h-6 w-20" />
+            ) : activityError ? (
+              <span>—</span>
             ) : (
               <>
                 <p className="text-xl font-bold tabular-nums text-rose-500">
-                  -{mask(formatCurrency(expenses, primaryCurrency, locale))}
+                  -{mask(formatCurrency(expenses, activityCurrency, locale))}
                 </p>
+                {pendingExpenses > 0 && (
+                  <p className="mt-1 text-xs font-medium tabular-nums text-amber-700 dark:text-amber-400">
+                    {t('dashboard.pendingExpenses', { amount: mask(formatCurrency(pendingExpenses, activityCurrency, locale)) })}
+                  </p>
+                )}
                 {Math.abs(projectedExpenses - expenses) >= 0.01 && (
                   <p className="text-xs text-muted-foreground tabular-nums mt-1">
-                    {t('dashboard.projectedExpenses')} {mask(formatCurrency(projectedExpenses, primaryCurrency, locale))}
+                    {t('dashboard.projectedExpenses')} {mask(formatCurrency(projectedExpenses, activityCurrency, locale))}
                   </p>
                 )}
               </>
@@ -967,7 +1075,7 @@ export default function DashboardPage() {
                         <span>{mask(formatCurrency(loanBalance, primaryCurrency, locale))}</span>
                       </div>
                     )}
-                    {hasProjectedBalance && (
+                    {!customRange && hasProjectedBalance && (
                       <div className="flex justify-between gap-3">
                         <span>{t('dashboard.projectedBalance')}</span>
                         <span>{mask(formatCurrency(projectedBalance, primaryCurrency, locale))}</span>
@@ -1001,14 +1109,16 @@ export default function DashboardPage() {
           {/* Savings rate */}
           <div className="relative min-w-0 before:content-[''] before:hidden @xl:before:block before:absolute before:-left-2.5 before:top-1.5 before:bottom-1.5 before:w-px before:bg-border">
             <p className="text-xs font-medium text-muted-foreground mb-1 min-h-[16px] flex items-center">{t('dashboard.savingsRate')}</p>
-            {summaryLoading ? (
+            {activityLoading ? (
               <Skeleton className="h-6 w-16" />
+            ) : activityError ? (
+              <span>—</span>
             ) : (
               <>
                 <p className={`text-xl font-bold tabular-nums ${savingsRateColor}`}>
-                  {savingsRateDisplay}
+                  {mask(savingsRateDisplay)}
                 </p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">{t('dashboard.savingsRateCaption')}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">{t(customRange ? 'dashboard.periodSavingsCaption' : 'dashboard.savingsRateCaption')}</p>
               </>
             )}
           </div>
@@ -1017,21 +1127,18 @@ export default function DashboardPage() {
         {/* Spending projection */}
         {projectedSpend !== null && !summaryLoading && (
           <p className="text-xs text-muted-foreground mt-3">
-            {t('dashboard.spendingProjection', { amount: mask(formatCurrency(projectedSpend, primaryCurrency, locale)) })}
+            {t('dashboard.spendingProjection', { amount: mask(formatCurrency(projectedSpend, activityCurrency, locale)) })}
           </p>
         )}
       </div>
     ),
     'uncategorized': (
-      !summaryLoading && (
+      activity && (
         uncategorizedCount > 0 ? (
           <button
             type="button"
             className="w-full flex items-center justify-between gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-lg px-4 py-2.5 cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors"
-            onClick={() => setDrillDown({
-              title: t('dashboard.drillDownUncategorized'),
-              uncategorized: true,
-            })}
+            onClick={(event) => openPeriodDetail(event.currentTarget, 'activity', t('dashboard.drillDownUncategorized'), 'uncategorized')}
           >
             <div className="flex items-center gap-2.5 min-w-0">
               {/* An icon, not the count: the sentence beside it already states
@@ -1044,7 +1151,7 @@ export default function DashboardPage() {
               <span className="text-sm text-amber-900 dark:text-amber-200 truncate">
                 {t('dashboard.uncategorizedCta', { count: uncategorizedCount })}
                 {uncategorizedAmount > 0 && (
-                  <span className="text-amber-700/70 dark:text-amber-300/70"> · {mask(formatCurrency(uncategorizedAmount, userCurrency, locale))}</span>
+                  <span className="text-amber-700/70 dark:text-amber-300/70"> · {mask(formatCurrency(uncategorizedAmount, activityCurrency, locale))}</span>
                 )}
               </span>
             </div>
@@ -1073,12 +1180,14 @@ export default function DashboardPage() {
             </button>
           </div>
           <div className="p-3 overflow-y-auto flex-1">
-            {spendingLoading ? (
+            {activityLoading ? (
               <div className="space-y-3 p-2">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <Skeleton key={i} className="h-12 w-full" />
                 ))}
               </div>
+            ) : activityError ? (
+              <p className="py-12 text-center text-sm text-destructive" role="alert">{t('common.error')}</p>
             ) : mergedCategories.length > 0 ? (
               <div className="space-y-1.5">
                 {mergedCategories.map((item) => {
@@ -1086,38 +1195,41 @@ export default function DashboardPage() {
                   const pct = item.percentage_used
 
                   return (
-                    <div
-                      key={item.category_id}
-                      className="rounded-lg px-3 py-2.5 hover:bg-muted/50 transition-colors cursor-pointer"
-                      onClick={() => setDrillDown({
-                        title: t('dashboard.drillDownCategory', { category: item.category_name, month: monthLabelStr }),
-                        category_id: item.category_id,
-                        type: 'debit',
-                        from: monthStart,
-                        to: monthEnd,
-                      })}
+                    <button
+                      type="button"
+                      key={item.category_id ?? 'uncategorized'}
+                      className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-muted/50 transition-colors cursor-pointer"
+                      onClick={(event) => openPeriodDetail(event.currentTarget, 'expenses',
+                        item.category_id ? item.category_name : t('reports.uncategorized'), item.category_id ?? 'uncategorized',
+                        item.projected - item.actual,
+                      )}
                     >
                       <div className="flex items-center gap-3">
                         <CategoryIcon icon={item.category_icon} color={item.category_color} size="lg" />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2 mb-1">
-                            <span className="text-sm font-semibold text-foreground truncate">{item.category_name}</span>
+                            <span className="text-sm font-semibold text-foreground truncate">{item.category_id ? item.category_name : t('reports.uncategorized')}</span>
                             <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-sm font-bold tabular-nums text-foreground">{mask(formatCurrency(item.actual, userCurrency, locale))}</span>
+                              <span className="text-sm font-bold tabular-nums text-foreground">{mask(formatCurrency(item.actual, activityCurrency, locale))}</span>
                               {item.momPct !== null && (
                                 <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold tabular-nums ${item.momPct > 0 ? 'bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400' : item.momPct < 0 ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400' : 'bg-muted text-muted-foreground'
                                   }`}>
-                                  {item.momPct > 0 ? '\u2191' : item.momPct < 0 ? '\u2193' : '='}{Math.abs(item.momPct).toFixed(0)}%
+                                  {item.momPct > 0 ? '\u2191' : item.momPct < 0 ? '\u2193' : '='}{mask(`${Math.abs(item.momPct).toFixed(0)}%`)}
                                 </span>
                               )}
                             </div>
                           </div>
+                          {item.projected > item.actual && (
+                            <p className="text-xs text-muted-foreground tabular-nums">
+                              {t('dashboard.projectedExpenses')} {mask(formatCurrency(item.projected, activityCurrency, locale))}
+                            </p>
+                          )}
                           {hasBudget && (
                             <BudgetSpendingProgress categoryName={item.category_name} percentage={pct!} budgetAmount={item.budget_amount!} currency={userCurrency} />
                           )}
                         </div>
                       </div>
-                    </div>
+                    </button>
                   )
                 })}
               </div>
@@ -1127,7 +1239,16 @@ export default function DashboardPage() {
           </div>
         </div>
     ),
-    'balance-flow': (
+    'balance-flow': customRange ? (
+      <DashboardPeriodBalanceChart
+        data={rangeBalance}
+        loading={rangeBalanceLoading}
+        error={rangeBalanceError}
+        locale={locale}
+        dateLocale={dateLocale}
+        mask={mask}
+      />
+    ) : (
         <div className="bg-card rounded-xl border border-border shadow-sm max-h-[420px] flex flex-col">
           <div className="px-5 pt-5 pb-3 shrink-0">
             <div className="flex items-start justify-between mb-0.5">
@@ -1495,6 +1616,23 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        {txViewMode === 'calendar' && customRange && (
+          <div className="mb-3 flex items-center justify-center gap-3">
+            <Button variant="outline" size="sm" disabled={viewedCalendarMonth === firstCalendarMonth}
+              onClick={() => setCalendarMonth(shiftMonth(viewedCalendarMonth, -1))}>
+              {t('dashboard.previous')}
+            </Button>
+            <span className="text-sm font-medium" aria-live="polite">{monthLabel(viewedCalendarMonth, dateLocale)}</span>
+            <Button variant="outline" size="sm" disabled={viewedCalendarMonth === lastCalendarMonth}
+              onClick={() => setCalendarMonth(shiftMonth(viewedCalendarMonth, 1))}>
+              {t('dashboard.next')}
+            </Button>
+          </div>
+        )}
+
+        {txViewMode === 'calendar' && (calendarError || noAccounts) && (
+          <p className="py-8 text-center text-sm text-muted-foreground">{t(calendarError ? 'common.error' : 'dashboard.noTransactions')}</p>
+        )}
         {txViewMode === 'calendar' && (
           <TransactionCalendarView
             calendar={calendarData}
@@ -1506,8 +1644,9 @@ export default function DashboardPage() {
             onSelectedDateChange={setCalendarSelectedDate}
             onOpenTransaction={handleOpenCalendarTransaction}
             accounts={accountsList}
-            userCurrency={userCurrency}
-            dateBasis={calendarDateBasis}
+            userCurrency={customRange ? activityCurrency : userCurrency}
+            dateBasis={customRange ? 'reporting' : calendarDateBasis}
+            observedPeriod={Boolean(customRange)}
             onDateBasisChange={setCalendarDateBasis}
           />
         )}
@@ -1520,6 +1659,8 @@ export default function DashboardPage() {
                   <Skeleton key={i} className="h-10 w-full" />
                 ))}
               </div>
+            ) : currentTxError ? (
+              <p className="py-8 text-center text-sm text-destructive" role="alert">{t('common.error')}</p>
             ) : pagedRows.length > 0 ? (
               <>
                 {isMobile ? (
@@ -1749,7 +1890,7 @@ export default function DashboardPage() {
                     </TableBody>
                   </Table>
                 )}
-                {allDisplayRows.length > 10 && (
+                {txCount > 10 && (
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-4 border-t border-border">
                     <div className="hidden sm:block w-32" />
                     {txTotalPages > 1 ? (
@@ -1821,43 +1962,73 @@ export default function DashboardPage() {
       {/* Header */}
       <PageHeader
         section={greeting}
-        title={monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())}
+        title={monthLabelStr.replace(/^\w/, c => c.toUpperCase())}
         action={
-          <div className="flex items-center gap-1">
-            <button
-              className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:border-border hover:text-foreground transition-all text-base"
-              onClick={() => handleMonthChange(shiftMonth(selectedMonth, -1))}
-            >&#8249;</button>
-            <Popover open={headerCalOpen} onOpenChange={setHeaderCalOpen}>
-              <PopoverTrigger asChild>
+          <div className="flex flex-wrap items-center gap-1">
+            {!customRange && (
+              <>
                 <button
-                  type="button"
-                  className="inline-flex items-center justify-center gap-2 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer min-w-[180px]"
-                >
-                  <CalendarIcon className="size-3.5 text-muted-foreground" />
-                  {monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="center" className="w-auto p-0">
-                <MonthPicker
-                  locale={dateFnsLocale}
-                  selectedMonth={new Date(`${selectedMonth}-01T00:00:00`)}
-                  onMonthSelect={(date) => {
-                    if (!date) return
-                    const newMonth = format(date, 'yyyy-MM')
-                    setSelectedMonth(newMonth)
-                    setHeaderCalOpen(false)
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
-            <button
-              className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:border-border hover:text-foreground transition-all text-base"
-              onClick={() => handleMonthChange(shiftMonth(selectedMonth, 1))}
-            >&#8250;</button>
+                  className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:border-border hover:text-foreground transition-all text-base"
+                  onClick={() => handleMonthChange(shiftMonth(selectedMonth, -1))}
+                >&#8249;</button>
+                <Popover open={headerCalOpen} onOpenChange={setHeaderCalOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center gap-2 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer min-w-[180px]"
+                    >
+                      <CalendarIcon className="size-3.5 text-muted-foreground" />
+                      {monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="center" className="w-auto p-0">
+                    <MonthPicker
+                      locale={dateFnsLocale}
+                      selectedMonth={new Date(`${selectedMonth}-01T00:00:00`)}
+                      onMonthSelect={(date) => {
+                        if (!date) return
+                        const newMonth = format(date, 'yyyy-MM')
+                        setSelectedMonth(newMonth)
+                        setHeaderCalOpen(false)
+                      }}
+                    />
+                  </PopoverContent>
+                </Popover>
+                <button
+                  className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:border-border hover:text-foreground transition-all text-base"
+                  onClick={() => handleMonthChange(shiftMonth(selectedMonth, 1))}
+                >&#8250;</button>
+              </>
+            )}
+            {customRange && <Button variant="outline" size="icon" aria-label={t('dashboard.previousPeriod')}
+              onClick={() => handleRangeChange(addMonthsIso(customRange.from, -1), addMonthsIso(customRange.to, -1))}>‹</Button>}
+            <DateRangePicker
+              from={customRange?.from ?? ''}
+              to={customRange?.to ?? ''}
+              defaultFrom={monthStart}
+              defaultTo={monthEnd}
+              placeholder={t('dashboard.customPeriod')}
+              label={t('dashboard.customPeriod')}
+              onChange={handleRangeChange}
+              requireBothDates
+              maxRangeYears={10}
+              size="sm"
+            />
+            {customRange && <Button variant="outline" size="icon" aria-label={t('dashboard.nextPeriod')}
+              onClick={() => handleRangeChange(addMonthsIso(customRange.from, 1), addMonthsIso(customRange.to, 1))}>›</Button>}
+            <ReportFilters
+              accountIds={selectedAccountIds}
+              collectionIds={collectionAccountIds}
+              onApply={(_, ids) => {
+                const next = new URLSearchParams(searchParams)
+                if (ids.length) next.set('account_id', ids.join(','))
+                else next.delete('account_id')
+                setSearchParams(next)
+              }}
+            />
             <PageRefreshButton
               onRefresh={() => queryClient.refetchQueries({ type: 'active' })}
-              refreshing={summaryFetching}
+              refreshing={summaryFetching || activityFetching}
             />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1877,6 +2048,18 @@ export default function DashboardPage() {
           </div>
         }
       />
+
+      {noAccounts && (
+        <p role="status" className="mb-3 text-sm text-muted-foreground">
+          {t(collectionLoading ? 'common.loading' : 'dashboard.noAccountsInScope')}
+        </p>
+      )}
+      {reportSelection && (
+        <ReportTransactionsDialog selection={reportSelection} onClose={() => {
+          setReportSelection(null)
+          requestAnimationFrame(() => reportTrigger.current?.focus())
+        }} />
+      )}
 
       {editing && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">

@@ -9,7 +9,7 @@ import { getAccountName, sortAccountsByDisplayName } from '@/lib/account-utils'
 import { REPORT_STATUSES, type ReportStatus } from '@/lib/report-selection'
 
 interface ReportFiltersProps {
-  statuses: ReportStatus[]
+  statuses?: ReportStatus[]
   accountIds: string[]
   collectionIds: string[] | null
   onApply: (statuses: ReportStatus[], accountIds: string[]) => void
@@ -19,7 +19,7 @@ export function ReportFilters({ statuses, accountIds, collectionIds, onApply }: 
   const { t } = useTranslation()
   const descriptionId = useId()
   const [open, setOpen] = useState(false)
-  const [draftStatuses, setDraftStatuses] = useState(statuses)
+  const [draftStatuses, setDraftStatuses] = useState(statuses ?? REPORT_STATUSES)
   const [draftAccounts, setDraftAccounts] = useState(accountIds)
   const { data = [], isLoading, isError } = useQuery({
     queryKey: ['accounts', 'include-closed'],
@@ -30,9 +30,9 @@ export function ReportFilters({ statuses, accountIds, collectionIds, onApply }: 
     collectionIds === null || collectionIds.includes(account.id),
   ))
   const label = (status: ReportStatus) => t(status === 'posted' ? 'transactions.statusPosted' : 'transactions.statusPending')
-  const count = Number(statuses.length === 1) + Number(accountIds.length > 0)
+  const count = Number(statuses?.length === 1) + Number(accountIds.length > 0)
   const description = [
-    statuses.length === 1 ? label(statuses[0]) : '',
+    statuses?.length === 1 ? label(statuses[0]) : '',
     accountIds.length === 1 ? t('transactions.calendarOneAccount')
       : accountIds.length > 1 ? t('transactions.calendarAccountCount', { count: accountIds.length }) : '',
   ].filter(Boolean).join(' · ')
@@ -40,7 +40,7 @@ export function ReportFilters({ statuses, accountIds, collectionIds, onApply }: 
   return (
     <Popover open={open} onOpenChange={(next) => {
       if (next) {
-        setDraftStatuses(statuses)
+        setDraftStatuses(statuses ?? REPORT_STATUSES)
         setDraftAccounts(accountIds)
       }
       setOpen(next)
@@ -56,7 +56,7 @@ export function ReportFilters({ statuses, accountIds, collectionIds, onApply }: 
       {count > 0 && <span id={descriptionId} className="sr-only">{description}</span>}
       <PopoverContent align="end" className="w-72 max-w-[calc(100vw-1.5rem)] p-0" aria-label={t('transactions.filtersBar.filters')}>
         <div className="grid gap-3 p-3">
-          <fieldset className="grid gap-1">
+          {statuses && <fieldset className="grid gap-1">
             <legend className="mb-1 text-xs font-semibold">{t('reports.customFilters.status')}</legend>
             {REPORT_STATUSES.map((status) => (
               <label key={status} className="flex items-start gap-2 rounded px-2 py-1 text-sm hover:bg-muted">
@@ -70,8 +70,8 @@ export function ReportFilters({ statuses, accountIds, collectionIds, onApply }: 
                 {label(status)}
               </label>
             ))}
-          </fieldset>
-          <fieldset className="min-w-0 border-t border-border pt-2">
+          </fieldset>}
+          <fieldset className={statuses ? "min-w-0 border-t border-border pt-2" : "min-w-0"}>
             <legend className="float-left mb-1 w-full text-xs font-semibold">{t('reports.accounts')}</legend>
             <div className="clear-both max-h-44 overflow-auto">
               {options.map((account) => (

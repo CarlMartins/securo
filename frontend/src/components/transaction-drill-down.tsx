@@ -115,8 +115,8 @@ export function TransactionDrillDown({
   const monthParam = filter?.from ? filter.from.slice(0, 7) + '-01' : undefined
 
   const { data: projectedTxs, isLoading: projectionsLoading, isError: projectionsError, refetch: refetchProjections } = useQuery({
-    queryKey: ['dashboard', 'projected-transactions', monthParam],
-    queryFn: () => dashboard.projectedTransactions({ month: monthParam }),
+    queryKey: ['dashboard', 'projected-transactions', monthParam, filter?.account_id, filter?.account_ids],
+    queryFn: () => dashboard.projectedTransactions({ month: monthParam, account_id: filter?.account_id, account_ids: filter?.account_ids }),
     enabled: !!filter && !!monthParam && !noAccounts && !filter.realizedOnly,
   })
 

@@ -1,3 +1,4 @@
+import { useDashboardBudget } from '@/hooks/use-dashboard-budget'
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -5,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { ArrowRight, RefreshCw, SendHorizontal, Sparkles } from 'lucide-react'
 
-import { accounts as accountsApi, budgets, dashboard, invoiceSchedules, invoices as invoicesApi } from '@/lib/api'
+import { accounts as accountsApi, dashboard, invoiceSchedules, invoices as invoicesApi } from '@/lib/api'
 import { AGING_BUCKETS, displayNumber } from '@/lib/invoice-utils'
 import { sumAccountBalances, getAccountLabel } from '@/lib/account-utils'
 import { formatCurrency } from '@/lib/format'
@@ -18,7 +19,7 @@ import { CategoryIcon } from '@/components/category-icon'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { DashboardSummary, InvoiceDirection } from '@/types'
+import type { DashboardPeriod, DashboardSummary, InvoiceDirection } from '@/types'
 
 /**
  * What the dashboard is looking at, for widgets that fetch their own data.
@@ -34,6 +35,12 @@ export interface DashboardScope {
   noAccounts: boolean
   /** The currency amounts are converted to. */
   currency: string
+  customPeriod?: boolean
+  range?: { from: string; to: string } | null
+  activity?: DashboardPeriod
+  activityLoading?: boolean
+  activityError?: boolean
+  refreshActivity?: () => void
 }
 
 function WidgetCard({ title, action, children, className }: { title: string; action?: ReactNode; children: ReactNode; className?: string }) {
@@ -80,33 +87,34 @@ function useSummary(scope: DashboardScope, month = scope.month) {
   return useQuery<DashboardSummary>({
     queryKey: ['dashboard', 'summary', month, scope.activeAccountIds, scope.activeWalletIds],
     queryFn: () => dashboard.summary(`${month}-01`, undefined, accountIds, walletIds),
+    enabled: !scope.noAccounts && !scope.customPeriod && scope.activeAccountIds === null,
   })
 }
 
 const expensesOf = (summary?: DashboardSummary) => Number(summary?.monthly_expenses_primary ?? summary?.monthly_expenses ?? 0)
-const incomeOf = (summary?: DashboardSummary) => Number(summary?.monthly_income_primary ?? summary?.monthly_income ?? 0)
+const observedIncome = (activity?: DashboardPeriod) => Number(activity?.posted_income ?? 0) + Number(activity?.pending_income ?? 0)
+const observedExpenses = (activity?: DashboardPeriod) => Number(activity?.posted_expenses ?? 0) + Number(activity?.pending_expenses ?? 0)
 
 function todayMonth() {
   const today = new Date()
   return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
 }
 
-/** This month's spending against the sum of its budgets, and how much a day is left. */
+/** This month's spending against the sum of its and how much a day is left. */
 export function SpendingPaceWidget({ scope }: { scope: DashboardScope }) {
   const { t } = useTranslation()
   const locale = useDisplayLocale()
   const { mask } = usePrivacyMode()
   const { data: summary, isLoading, isError, refetch } = useSummary(scope)
-  const { data: comparison, isLoading: budgetsLoading, isError: budgetsError, refetch: refetchBudgets } = useQuery({
-    queryKey: ['budgets', 'comparison', scope.month],
-    queryFn: () => budgets.comparison(`${scope.month}-01`),
-  })
-  const money = (value: number) => mask(formatCurrency(value, scope.currency, locale))
-  const spent = expensesOf(summary)
-  const budget = (comparison ?? []).reduce((sum, row) => sum + Number(row.budget_amount ?? 0), 0)
+  const { rows: comparison, loading: budgetsLoading, error: budgetsError, refresh: refetchBudgets } =
+    useDashboardBudget(scope.month, scope.range ?? null, !scope.noAccounts)
+  const filtered = Boolean(scope.customPeriod || scope.activeAccountIds !== null)
+  const money = (value: number) => mask(formatCurrency(value, scope.activity?.currency ?? scope.currency, locale))
+  const spent = filtered ? observedExpenses(scope.activity) : expensesOf(summary)
+  const budget = comparison.reduce((sum, row) => sum + Number(row.budget_amount ?? 0), 0)
 
   const lastDay = monthLastDay(scope.month)
-  const isCurrent = scope.month === todayMonth()
+  const isCurrent = !scope.customPeriod && scope.month === todayMonth()
   const today = isCurrent ? new Date().getDate() : scope.month < todayMonth() ? lastDay : 0
   const used = budget > 0 ? (spent / budget) * 100 : 0
   // Where spending would be today if it went evenly through the month.
@@ -115,11 +123,11 @@ export function SpendingPaceWidget({ scope }: { scope: DashboardScope }) {
   const daysLeft = lastDay - today + 1
 
   return (
-    <WidgetCard title={t('widgets.spendingPace.title')} action={<CardLink to="/budgets" label={t('widgets.budgets')} />}>
-      {isLoading || budgetsLoading ? (
+    <WidgetCard title={t(scope.customPeriod ? 'dashboard.periodExpenses' : 'widgets.spendingPace.title')} action={<CardLink to="/budgets" label={t('widgets.budgets')} />}>
+      {(filtered ? scope.activityLoading : isLoading) || budgetsLoading ? (
         <Skeleton className="h-24 w-full" />
-      ) : isError || budgetsError ? (
-        <Failed onRetry={() => { void refetch(); void refetchBudgets() }} />
+      ) : (filtered ? scope.activityError : isError) || budgetsError ? (
+        <Failed onRetry={() => { if (filtered) scope.refreshActivity?.(); else void refetch(); refetchBudgets() }} />
       ) : budget <= 0 ? (
         <div className="flex flex-1 flex-col justify-between gap-4">
           <p className="text-2xl font-bold tabular-nums">{money(spent)}</p>
@@ -134,7 +142,7 @@ export function SpendingPaceWidget({ scope }: { scope: DashboardScope }) {
           <div>
             <div className="relative h-2 overflow-hidden rounded-full bg-muted">
               <div
-                className={cn('h-full rounded-full', used > 100 ? 'bg-rose-500' : used > pace ? 'bg-amber-400' : 'bg-emerald-500')}
+                className={cn('h-full rounded-full', used > 100 ? 'bg-rose-500' : isCurrent && used > pace ? 'bg-amber-400' : 'bg-emerald-500')}
                 style={{ width: `${Math.min(used, 100)}%` }}
               />
               {isCurrent && (
@@ -164,21 +172,13 @@ export function SpendingDistributionWidget({ scope }: { scope: DashboardScope })
   const { t } = useTranslation()
   const locale = useDisplayLocale()
   const { mask } = usePrivacyMode()
-  const accountIds = scope.activeAccountIds ?? undefined
-  const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['dashboard', 'spending', scope.month, scope.activeAccountIds],
-    queryFn: () => dashboard.spendingByCategory(`${scope.month}-01`, accountIds),
-    enabled: !scope.noAccounts,
-  })
-  // The all-in amount, settled plus pending and recurring projections, as the
-  // spending-by-category widget shows it.
+  const { activity, activityLoading, activityError, refreshActivity } = scope
   const rows = useMemo(
-    () =>
-      (data ?? [])
-        .map((row) => ({ ...row, total: Number(row.projected_total ?? row.total) }))
-        .filter((row) => row.total > 0)
-        .sort((a, b) => b.total - a.total),
-    [data],
+    () => (activity?.spending ?? [])
+      .map((row) => ({ ...row, total: Number(row.total) }))
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total),
+    [activity],
   )
   const total = rows.reduce((sum, row) => sum + row.total, 0)
   const top = rows.slice(0, 5)
@@ -187,14 +187,14 @@ export function SpendingDistributionWidget({ scope }: { scope: DashboardScope })
     ...top.map((row) => ({ key: row.category_id ?? row.category_name, value: row.total, color: row.category_color || 'var(--chart-muted)' })),
     ...(rest > 0 ? [{ key: 'other', value: rest, color: 'var(--chart-muted)' }] : []),
   ]
-  const money = (value: number) => mask(formatCurrency(value, scope.currency, locale))
+  const money = (value: number) => mask(formatCurrency(value, activity?.currency ?? scope.currency, locale))
 
   return (
     <WidgetCard title={t('widgets.distribution.title')}>
-      {isLoading ? (
+      {activityLoading ? (
         <Skeleton className="h-40 w-full" />
-      ) : isError ? (
-        <Failed onRetry={() => void refetch()} />
+      ) : activityError ? (
+        <Failed onRetry={() => refreshActivity?.()} />
       ) : total <= 0 ? (
         <Empty>{t('dashboard.noData')}</Empty>
       ) : (
@@ -218,7 +218,7 @@ export function SpendingDistributionWidget({ scope }: { scope: DashboardScope })
             {top.map((row) => (
               <li key={row.category_id ?? row.category_name} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
                 <CategoryIcon icon={row.category_icon} color={row.category_color} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-sm">{row.category_name}</span>
+                <span className="min-w-0 flex-1 truncate text-sm">{row.category_id ? row.category_name : t('reports.uncategorized')}</span>
                 <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">
                   {Math.round((row.total / total) * 100)}%
                 </span>
@@ -237,20 +237,25 @@ export function MonthResultWidget({ scope }: { scope: DashboardScope }) {
   const { t } = useTranslation()
   const locale = useDisplayLocale()
   const { mask } = usePrivacyMode()
-  const { data: summary, isLoading, isError, refetch } = useSummary(scope)
-  const { data: previous } = useSummary(scope, shiftMonth(scope.month, -1))
-  const income = incomeOf(summary)
-  const expenses = expensesOf(summary)
+  const { activity, activityLoading, activityError, refreshActivity } = scope
+  const previousMonth = shiftMonth(scope.month, -1) + '-01'
+  const { data: previous } = useQuery({
+    queryKey: ['dashboard', 'period', previousMonth, scope.activeAccountIds],
+    queryFn: () => dashboard.period({ month: previousMonth }, scope.activeAccountIds ?? undefined),
+    enabled: !scope.customPeriod && !scope.noAccounts,
+  })
+  const income = observedIncome(activity)
+  const expenses = observedExpenses(activity)
   const result = income - expenses
-  const before = previous ? incomeOf(previous) - expensesOf(previous) : null
-  const money = (value: number) => mask(formatCurrency(value, scope.currency, locale))
+  const before = previous ? observedIncome(previous) - observedExpenses(previous) : null
+  const money = (value: number) => mask(formatCurrency(value, activity?.currency ?? scope.currency, locale))
 
   return (
-    <WidgetCard title={t('widgets.monthResult.title')}>
-      {isLoading ? (
+    <WidgetCard title={t(scope.customPeriod ? 'dashboard.periodResult' : 'widgets.monthResult.title')}>
+      {activityLoading ? (
         <Skeleton className="h-24 w-full" />
-      ) : isError ? (
-        <Failed onRetry={() => void refetch()} />
+      ) : activityError ? (
+        <Failed onRetry={() => refreshActivity?.()} />
       ) : (
         <div className="flex flex-1 flex-col justify-between gap-4">
           <div>
@@ -264,11 +269,11 @@ export function MonthResultWidget({ scope }: { scope: DashboardScope }) {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className="text-xs text-muted-foreground">{t('dashboard.monthlyIncome')}</p>
+              <p className="text-xs text-muted-foreground">{t(scope.customPeriod ? 'dashboard.periodIncome' : 'dashboard.monthlyIncome')}</p>
               <p className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">+{money(income)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">{t('dashboard.monthlyExpenses')}</p>
+              <p className="text-xs text-muted-foreground">{t(scope.customPeriod ? 'dashboard.periodExpenses' : 'dashboard.monthlyExpenses')}</p>
               <p className="text-sm font-semibold tabular-nums text-rose-500">-{money(expenses)}</p>
             </div>
           </div>
@@ -291,8 +296,9 @@ export function UpcomingWidget({ scope }: { scope: DashboardScope }) {
   const from = iso(today)
   const to = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + UPCOMING_DAYS))
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['dashboard', 'projected-transactions', 'upcoming', from],
-    queryFn: () => dashboard.projectedTransactions({ from, to }),
+    queryKey: ['dashboard', 'projected-transactions', 'upcoming', from, scope.activeAccountIds],
+    queryFn: () => dashboard.projectedTransactions({ from, to, account_ids: scope.activeAccountIds ?? undefined }),
+    enabled: !scope.noAccounts,
   })
   // Within the active collection: a recurring transaction counts when its account is in it.
   const scoped = scope.activeAccountIds

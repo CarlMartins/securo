@@ -59,3 +59,7 @@ Os casos acima são roteiros de aceitação. As suítes executadas anteriormente
 - **R02 · Política de cálculo.** A apuração usa decimais, reconcilia parcelas e não presume câmbio. Falta definir o modo e a etapa de quantização, o desempate do resíduo, a data de busca da taxa na ausência de valor gravado e a apresentação quando nenhuma taxa se resolve. Revisar a atribuição de parcelas de grupo recebidas por categoria, inclusive crédito, onde os agregados históricos divergem.
 - **R03 · Vínculos entre projeções.** A data de referência governa a apuração, com identidade e data bancária preservadas. Falta confirmar quais chaves ou vínculos nativos permitem relacionar com segurança uma operação a recorrência ou previsão de fatura, inclusive em pagamentos parciais. Usar os vínculos nativos comprovados e preservar previsões independentes.
 - **R04 · Favoritos e escopo.** O layout configurável e o estado vazio estão definidos. Falta decidir como sinalizar ou normalizar IDs inválidos, extintos ou duplicados e como distinguir contas selecionadas das efetivamente aplicadas. Links com IDs de outro espaço nunca devem revelar dados nem ampliar a seleção.
+
+## Tela principal
+
+Os cenários DASH-01 a DASH-07 têm exemplos financeiros, cobertura executável e evidência de interface no [aceite do painel](aceite-dashboard.md). Use a especificação [06](../features/06-filtros-do-dashboard.md) quando a versão alvo mudar os componentes ou as rotas.

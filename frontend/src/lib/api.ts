@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ReportGroup, ReportSelection, ReportStatus } from '@/lib/report-selection'
+import type { ReportLedgerGroup, ReportSelection, ReportStatus } from '@/lib/report-selection'
 import type { LayoutItem } from '@/lib/library'
 import { normalizeBudgetComparisonRows } from '@/lib/budget-settings-utils'
 import type { AxiosResponse } from 'axios'
@@ -97,6 +97,8 @@ import type {
   Goal,
   GoalSummary,
   DashboardSummary,
+  DashboardPeriod,
+  DashboardPeriodBalance,
   SpendingByCategory,
   MonthlyTrend,
   BalanceHistory,
@@ -610,7 +612,7 @@ export const mortgagePayments = {
 // Transactions
 export const transactions = {
   list: async (params?: {
-    report_group?: ReportGroup
+    report_group?: ReportLedgerGroup
     report_from?: string
     report_to?: string
     account_id?: string
@@ -653,6 +655,8 @@ export const transactions = {
     account_id?: string
     account_ids?: string[]
     date_basis?: 'reporting' | 'bank'
+    observed_from?: string
+    observed_to?: string
   }): Promise<TransactionCalendarResponse> => {
     const { data } = await api.get('/transactions/calendar', {
       params,
@@ -824,7 +828,7 @@ export const transactions = {
     return data
   },
   export: async (params?: {
-    report_group?: ReportGroup
+    report_group?: ReportLedgerGroup
     report_from?: string
     report_to?: string
     group_id?: string
@@ -1433,6 +1437,22 @@ const acctIdsParam = (accountIds?: string[]) =>
     : {}
 
 export const dashboard = {
+  period: async (window: { month: string } | { from: string; to: string }, accountIds?: string[]): Promise<DashboardPeriod> => {
+    const extra = acctIdsParam(accountIds)
+    const { data } = await api.get('/dashboard/period', {
+      params: { ...window, ...extra.params },
+      paramsSerializer: { indexes: null },
+    })
+    return data
+  },
+  balancePeriod: async (window: { from: string; to: string }, accountIds?: string[]): Promise<DashboardPeriodBalance> => {
+    const extra = acctIdsParam(accountIds)
+    const { data } = await api.get('/dashboard/balance-period', {
+      params: { ...window, ...extra.params },
+      paramsSerializer: { indexes: null },
+    })
+    return data
+  },
   summary: async (month?: string, balanceDate?: string, accountIds?: string[], assetGroupIds?: string[]): Promise<DashboardSummary> => {
     const hasFilter = (accountIds && accountIds.length > 0) || (assetGroupIds && assetGroupIds.length > 0)
     const { data } = await api.get('/dashboard/summary', {
@@ -1455,8 +1475,8 @@ export const dashboard = {
     const { data } = await api.get('/dashboard/monthly-trend', { params: { months, ...(extra.params ?? {}) }, ...(extra.paramsSerializer ? { paramsSerializer: extra.paramsSerializer } : {}) })
     return data
   },
-  projectedTransactions: async (params?: { month?: string; account_id?: string; from?: string; to?: string }): Promise<ProjectedTransaction[]> => {
-    const { data } = await api.get('/dashboard/projected-transactions', { params })
+  projectedTransactions: async (params?: { month?: string; account_id?: string; account_ids?: string[]; from?: string; to?: string }): Promise<ProjectedTransaction[]> => {
+    const { data } = await api.get('/dashboard/projected-transactions', { params, paramsSerializer: { indexes: null } })
     return data
   },
   balanceHistory: async (

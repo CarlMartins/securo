@@ -1139,6 +1139,7 @@ async def get_projected_transactions(
     month: Optional[date] = None,
     *,
     account_id: Optional[uuid.UUID] = None,
+    account_ids: Optional[list[uuid.UUID]] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
 ) -> list[ProjectedTransaction]:
@@ -1183,6 +1184,8 @@ async def get_projected_transactions(
     )
     if account_id is not None:
         stmt = stmt.where(RecurringTransaction.account_id == account_id)
+    if account_ids is not None:
+        stmt = stmt.where(RecurringTransaction.account_id.in_(account_ids))
     result = await session.execute(stmt)
     recurring_list = list(result.scalars().all())
 
@@ -1815,6 +1818,24 @@ async def get_balance_history_months(
     return [f"{int(year):04d}-{int(month):02d}" for year, month in result.all()]
 
 
+async def _balance_history_account_ids(
+    session: AsyncSession, workspace_id: uuid.UUID, account_ids: list[uuid.UUID] | None,
+) -> list[uuid.UUID] | None:
+    loan_ids = set((await session.execute(
+        select(Account.id).where(Account.workspace_id == workspace_id, Account.type == "loan")
+    )).scalars())
+    balance_account_ids = account_ids
+    if loan_ids:
+        if account_ids is None:
+            balance_account_ids = list((await session.execute(
+                select(Account.id).where(Account.workspace_id == workspace_id, Account.type != "loan")
+            )).scalars())
+        else:
+            balance_account_ids = [i for i in account_ids if i not in loan_ids]
+
+    return balance_account_ids
+
+
 async def get_balance_history(
     session: AsyncSession,
     workspace_id: uuid.UUID,
@@ -1843,17 +1864,7 @@ async def get_balance_history(
 
     # Loans are long-term debt: they count in net worth, not in the money this
     # curve tracks, so it leaves them out (like the sidebar accounts total).
-    loan_ids = set((await session.execute(
-        select(Account.id).where(Account.workspace_id == workspace_id, Account.type == "loan")
-    )).scalars())
-    balance_account_ids = account_ids
-    if loan_ids:
-        if account_ids is None:
-            balance_account_ids = list((await session.execute(
-                select(Account.id).where(Account.workspace_id == workspace_id, Account.type != "loan")
-            )).scalars())
-        else:
-            balance_account_ids = [i for i in account_ids if i not in loan_ids]
+    balance_account_ids = await _balance_history_account_ids(session, workspace_id, account_ids)
 
     # Starting balances
     current_start = await _balance_at(
@@ -1964,7 +1975,10 @@ async def get_balance_history(
             session, workspace_id, proj_start, month_end, account_ids
         )
         for proj in projections:
-            if proj["account_id"] in loan_ids:
+            if (
+                balance_account_ids is not None and proj["account_id"] is not None
+                and proj["account_id"] not in balance_account_ids
+            ):
                 continue
             day = proj["date"].day
             proj_converted, _ = await convert(

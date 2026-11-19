@@ -17,10 +17,10 @@ import {
 import { AssistantContext } from '@/contexts/assistant-context'
 import { formatCurrency } from '@/lib/format'
 import { renderWithProviders, t } from '@/test/utils'
-import type { Account, DashboardSummary, Invoice, InvoiceSummary } from '@/types'
+import type { Account, DashboardPeriod, DashboardSummary, Invoice, InvoiceSummary } from '@/types'
 
 const api = vi.hoisted(() => ({
-  dashboard: { summary: vi.fn(), spendingByCategory: vi.fn(), projectedTransactions: vi.fn() },
+  dashboard: { summary: vi.fn(), period: vi.fn(), projectedTransactions: vi.fn() },
   budgets: { comparison: vi.fn() },
   accounts: { list: vi.fn() },
   invoices: { summary: vi.fn() },
@@ -35,6 +35,15 @@ const PAST: DashboardScope = { month: '2026-03', activeAccountIds: null, activeW
 
 function summary(income: number, expenses: number): DashboardSummary {
   return { monthly_income_primary: income, monthly_expenses_primary: expenses } as DashboardSummary
+}
+
+function activity(income: number, expenses: number, spending: DashboardPeriod['spending'] = []): DashboardPeriod {
+  return {
+    currency: 'USD', posted_income: String(income), posted_expenses: String(expenses),
+    pending_income: '0', pending_expenses: '0', additional_projected_income: '0',
+    additional_projected_expenses: '0', spending, missing_fx_count: 0,
+    uncategorized_count: 0, uncategorized_amount: '0',
+  }
 }
 
 function account(overrides: Partial<Account>): Account {
@@ -58,6 +67,18 @@ describe('SpendingPaceWidget', () => {
     expect(await screen.findByText(usd(750))).toBeInTheDocument()
     expect(screen.getByText(`/ ${usd(1000)}`)).toBeInTheDocument()
     expect(screen.getByText(t('widgets.spendingPace.left', { amount: usd(250) }))).toBeInTheDocument()
+  })
+
+  it('compares filtered spending with prorated monthly limits across a month boundary', async () => {
+    api.budgets.comparison.mockImplementation(async (month: string) => [
+      { category_id: 'food', budget_amount: month === '2026-03-01' ? 310 : 600 },
+    ])
+    renderWithProviders(<SpendingPaceWidget scope={{
+      ...PAST, customPeriod: true, range: { from: '2026-03-30', to: '2026-04-03' },
+      activeAccountIds: ['a'], activity: activity(0, 40),
+    }} />)
+    expect(await screen.findByText('/ ' + usd(80))).toBeInTheDocument()
+    expect(screen.getByText(t('widgets.spendingPace.used', { percent: 50 }))).toBeInTheDocument()
   })
 
   it('says by how much the budget was passed', async () => {
@@ -86,29 +107,29 @@ describe('SpendingPaceWidget', () => {
 
 describe('SpendingDistributionWidget', () => {
   it('lists the categories that took the most, with their share', async () => {
-    api.dashboard.spendingByCategory.mockResolvedValue([
+    const spending = [
       { category_id: 'rent', category_name: 'Rent', category_icon: 'house', category_color: '#111111', total: 700, projected_total: 750, percentage: 0 },
       { category_id: 'food', category_name: 'Food', category_icon: 'utensils', category_color: '#222222', total: 250, projected_total: 250, percentage: 0 },
       { category_id: 'none', category_name: 'Nothing', category_icon: 'x', category_color: '#333333', total: 0, projected_total: 0, percentage: 0 },
-    ])
-    renderWithProviders(<SpendingDistributionWidget scope={PAST} />)
+    ].map((row) => ({ ...row, total: String(row.total), projected_total: String(row.projected_total) }))
+    renderWithProviders(<SpendingDistributionWidget scope={{ ...PAST, activity: activity(0, 0, spending) }} />)
     expect(await screen.findByText('Rent')).toBeInTheDocument()
-    expect(screen.getByText('75%')).toBeInTheDocument()
-    expect(screen.getByText(usd(1000))).toBeInTheDocument()
+    expect(screen.getByText('74%')).toBeInTheDocument()
+    expect(screen.getByText(usd(950))).toBeInTheDocument()
     expect(screen.queryByText('Nothing')).not.toBeInTheDocument()
   })
 
   it('loads nothing for a collection of wallets only, and says there is nothing', () => {
     renderWithProviders(<SpendingDistributionWidget scope={{ ...PAST, noAccounts: true }} />)
-    expect(api.dashboard.spendingByCategory).not.toHaveBeenCalled()
+    expect(api.dashboard.period).not.toHaveBeenCalled()
     expect(screen.getByText(t('dashboard.noData'))).toBeInTheDocument()
   })
 })
 
 describe('MonthResultWidget', () => {
   it('shows income minus spending, and last month for comparison', async () => {
-    api.dashboard.summary.mockImplementation(async (month: string) => (month === '2026-03-01' ? summary(2000, 1500) : summary(1000, 1200)))
-    renderWithProviders(<MonthResultWidget scope={PAST} />)
+    api.dashboard.period.mockResolvedValue(activity(1000, 1200))
+    renderWithProviders(<MonthResultWidget scope={{ ...PAST, activity: activity(2000, 1500) }} />)
     expect(await screen.findByText(`+${usd(500)}`)).toBeInTheDocument()
     expect(await screen.findByText(t('widgets.monthResult.previous', { amount: usd(-200) }))).toBeInTheDocument()
   })

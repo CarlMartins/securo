@@ -814,6 +814,20 @@
     "passkeyNeverUsed": "Never"
   },
   "dashboard": {
+    "customPeriod": "Custom period",
+    "periodIncome": "Period income",
+    "periodExpenses": "Period expenses",
+    "pendingExpenses": "Of which pending: {{amount}}",
+    "availableBalanceToday": "Available balance today",
+    "selectedPeriod": "Selected period",
+    "nextPeriod": "Next period",
+    "previousPeriod": "Previous period",
+    "settledBalanceCaption": "Settled movements by bank date",
+    "noAccountsInScope": "No accounts in this selection.",
+    "periodMissingFx": "Some transactions are excluded from the totals because their exchange rate is unavailable.",
+    "periodSavingsCaption": "of income saved in this period",
+    "periodResult": "Period result",
+    "budgetMonthlyScope": "Budget pace is available in the monthly view with all accounts.",
     "title": "Dashboard",
     "greetingMorning": "Good morning",
     "greetingAfternoon": "Good afternoon",
@@ -2161,6 +2175,7 @@
     "propertyEquity": "Value {{value}} · Debt {{debt}} · Equity {{equity}}"
   },
   "reports": {
+    "activity": "Activity",
     "customFilters": {
       "status": "Transaction status"
     },

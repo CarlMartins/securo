@@ -48,3 +48,15 @@ Para repetir as suítes existentes do backend em qualquer uma das versões:
 No frontend, executar `npm test --` em `frontend/` com os arquivos comuns `src/pages/reports.test.tsx` e `src/lib/report-period.test.ts`. No fork antigo, incluir `src/pages/reports-drilldown.test.tsx`, `src/lib/report-drilldown.test.ts` e `src/lib/api-reports.test.ts`. Na branch atual, incluir `src/components/reports/IncomeExpenseStatement.test.tsx`.
 
 Os testes de contrato dependem dos pontos de entrada atuais e de fixtures existentes. Em uma arquitetura diferente, adapte o transporte e a preparação de dados. Preserve as entradas e resultados definidos na matriz.
+
+## Painel com período e contas
+
+A suíte portátil [test_dashboard_period_api.py](test_dashboard_period_api.py) executa contra a API real com as fixtures do backend. Na raiz da versão alvo, execute:
+
+```sh
+(cd backend && PYTHONPATH=. .venv/bin/python -B -m pytest -c pyproject.toml -p tests.conftest ../custom/tests/test_dashboard_period_api.py)
+(cd backend && .venv/bin/python -m pytest tests/test_dashboard_api.py tests/test_dashboard_service.py tests/test_transaction_calendar_service.py tests/test_report_service.py)
+(cd frontend && npm test -- src/pages/dashboard.test.tsx src/components/dashboard-widgets.test.tsx src/pages/reports.test.tsx src/pages/report-drilldown.test.tsx src/components/ui/date-range-picker.test.tsx src/lib/calendar-activity.test.ts)
+```
+
+Os casos de UI adicionais ficam na regressão da página real. Veja [aceite e evidência visual](aceite-dashboard.md) para testar a mesma experiência em outra versão.

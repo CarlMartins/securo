@@ -39,6 +39,7 @@ class TransactionCalendarDay(BaseModel):
     date: date
     in_month: bool
     ending_balance: float
+    unavailable: bool = False
     # Combined totals kept for backwards compatibility with existing consumers.
     income: float = 0.0
     expense: float = 0.0

@@ -55,7 +55,7 @@ class Amount:
     projected: bool = False
 
 
-async def _projections(
+async def project_amounts(
     session, workspace_id, user_id, currency, accounting_mode,
     start, end, account_ids, observed,
 ) -> list[Amount]:
@@ -167,7 +167,7 @@ async def build_report(
         for part in observed
     ]
     if include_forecasts and account_ids != []:
-        amounts.extend(await _projections(
+        amounts.extend(await project_amounts(
             session, workspace_id, user_id, currency, accounting_mode,
             start, end, account_ids, observed,
         ))

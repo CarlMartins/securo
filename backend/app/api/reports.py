@@ -15,7 +15,7 @@ from app.schemas.report import (
 )
 from app.services.account_service import get_account_name
 from app.services.admin_service import get_credit_card_accounting_mode
-from app.services.report_contributions import ReportGroup, load_contributions, select_contributions
+from app.services.report_contributions import ReportLedgerGroup, load_contributions, select_contributions
 from app.services import category_statement_service, report_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -193,7 +193,7 @@ async def get_income_expenses(
 async def get_income_expense_transactions(
     start_date: date,
     end_date: date,
-    group: ReportGroup,
+    group: ReportLedgerGroup,
     selection_from: date | None = None,
     selection_to: date | None = None,
     category: uuid.UUID | str | None = None,
@@ -220,7 +220,8 @@ async def get_income_expense_transactions(
         start_date, min(end_date, app_today()), selected_statuses, account_ids,
     )
     rows = select_contributions(
-        observed, group=group, uncategorized=uncategorized,
+        (part for part in observed if group != "activity" or part.group != "investments"),
+        group=None if group == "activity" else group, uncategorized=uncategorized,
         category_ids={category} if isinstance(category, uuid.UUID) else None,
         start=selection_from, end=selection_to,
     )

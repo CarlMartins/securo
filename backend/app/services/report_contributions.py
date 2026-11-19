@@ -19,6 +19,7 @@ from app.services._query_filters import reporting_date_col
 from app.services.fx_rate_service import convert_or_none
 
 ReportGroup = Literal["income", "expenses", "investments"]
+ReportLedgerGroup = ReportGroup | Literal["activity"]
 ALL_STATUSES = ("posted", "pending")
 ZERO = Decimal(0)
 CENT = Decimal("0.01")

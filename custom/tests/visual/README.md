@@ -13,3 +13,15 @@ python3 custom/tests/visual/visual-check.py
 ```
 
 As imagens são gravadas em `tmp/validation/capturas`. Para substituir as capturas existentes, passe `v019 v016-custom replace` ao script. As dimensões efetivas são registradas no console. No ambiente Fedora usado na migração, o Firefox impôs largura mínima de 500 px no modo headless.
+
+## Painel com período e contas
+
+Execute na raiz com Firefox e as dependências frontend instaladas. O script usa loopback e um perfil temporário. A interface recebe dados fictícios pelo adaptador do fixture.
+
+```sh
+mkdir -p frontend/tmp/securo-visual
+cp custom/tests/visual/dashboard.html custom/tests/visual/dashboard.tsx custom/tests/visual/vite.config.ts frontend/tmp/securo-visual/
+python3 custom/tests/visual/visual-check.py dashboard
+```
+
+A execução grava as capturas em `custom/tests/visual/dashboard-capturas/`. Os casos incluem resumo e gráfico no desktop, filtro de contas, calendário recortado e modal móvel em tema escuro com a máscara ativa.

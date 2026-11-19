@@ -202,7 +202,7 @@ export function DateRangePicker({
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="w-auto p-0"
+        className="max-h-[var(--radix-popover-content-available-height)] w-auto overflow-y-auto p-0"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <div className="border-b border-border/70 px-4 py-3">

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
 from app.api.reports import _resolve_custom_range
-from app.services.report_contributions import ALL_STATUSES, ReportGroup, load_contributions, select_contributions
+from app.services.report_contributions import ALL_STATUSES, ReportGroup, ReportLedgerGroup, load_contributions, select_contributions
 from app.core.database import get_async_session
 from app.core.workspace_context import (
     WorkspaceContext,
@@ -165,7 +165,7 @@ async def _report_ledger_amounts(
     session: AsyncSession,
     ctx: WorkspaceContext,
     accounting_mode: str,
-    group: ReportGroup,
+    group: ReportLedgerGroup,
     report_from: date | None,
     report_to: date | None,
     *,
@@ -246,7 +246,7 @@ async def list_transactions(
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
     sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
-    report_group: ReportGroup | None = Query(None),
+    report_group: ReportLedgerGroup | None = Query(None),
     report_from: date | None = Query(None),
     report_to: date | None = Query(None),
     ctx: WorkspaceContext = Depends(current_workspace),
@@ -297,8 +297,9 @@ async def list_transactions(
     primary_currency = ctx.user.primary_currency
     items = [_tag_fx_fallback(TransactionRead.model_validate(tx, from_attributes=True), primary_currency) for tx in transactions]
     if report_amounts is not None:
-        for item in items:
+        for item, tx in zip(items, transactions, strict=True):
             item.report_amount = report_amounts[item.id]
+            item.report_date = reporting_date_value(tx, accounting_mode)
     await _attach_invoice_links(session, ctx, items)
     await _attach_transfer_counterparts(session, ctx.workspace.id, items)
     summary_out = (
@@ -315,9 +316,18 @@ async def transaction_calendar(
     account_id: Optional[uuid.UUID] = Query(None),
     account_ids: Optional[List[uuid.UUID]] = Query(None),
     date_basis: Literal["reporting", "bank"] = Query("reporting"),
+    observed_from: date | None = Query(None),
+    observed_to: date | None = Query(None),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
+    start, end = _resolve_custom_range(observed_from, observed_to, allow_future=True)
+    observed_range = (start, end) if start is not None and end is not None else None
+    if observed_range and (
+        month is None or not start.replace(day=1) <= month.replace(day=1) <= end.replace(day=1)
+        or month.year == date.max.year or month.year == date.min.year and month.month == 1
+    ):
+        raise HTTPException(status_code=422, detail="Calendar month must be within the observed period")
     return await get_transaction_calendar(
         session,
         ctx.workspace.id,
@@ -325,6 +335,7 @@ async def transaction_calendar(
         month,
         account_ids=_merge_id_filters(account_id, account_ids),
         date_basis=date_basis,
+        observed_range=observed_range,
     )
 
 
@@ -355,7 +366,7 @@ async def export_transactions(
     exclude_ignored: bool = Query(False, description="Drop rows the user marked ignored, or whose category is ignored"),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
-    report_group: ReportGroup | None = Query(None),
+    report_group: ReportLedgerGroup | None = Query(None),
     report_from: date | None = Query(None),
     report_to: date | None = Query(None),
     group_id: uuid.UUID | None = Query(None),

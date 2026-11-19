@@ -183,6 +183,7 @@ class TransactionTransferCounterpart(BaseModel):
 
 
 class TransactionRead(TransactionBase):
+    report_date: Optional[_Date] = None
     report_amount: Optional[Decimal] = None
     id: uuid.UUID
     user_id: uuid.UUID

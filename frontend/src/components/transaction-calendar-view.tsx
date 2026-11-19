@@ -13,6 +13,7 @@ import { activityChartData, dayActivity, isCalendarItemInteractive } from '@/lib
 import { todayInTimezone, weekdayShortLabels } from '@/lib/date-utils'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { cn } from '@/lib/utils'
+import { formatDate } from '@/lib/date-range-format'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
 import {
@@ -81,6 +82,7 @@ export function TransactionCalendarView({
   userCurrency,
   dateBasis,
   onDateBasisChange,
+  observedPeriod = false,
 }: {
   calendar?: TransactionCalendarResponse
   isLoading: boolean
@@ -94,6 +96,7 @@ export function TransactionCalendarView({
   userCurrency: string
   dateBasis: CalendarDateBasis
   onDateBasisChange: (value: CalendarDateBasis) => void
+  observedPeriod?: boolean
 }) {
   const [density, setDensity] = useState<CalendarDensity>(readCalendarDensity)
   const [metric, setMetric] = useState<CalendarMetric>(readCalendarMetric)
@@ -117,18 +120,21 @@ export function TransactionCalendarView({
   }, [metric])
 
   useEffect(() => {
-    saveCalendarDateBasis(dateBasis)
-  }, [dateBasis])
+    if (!observedPeriod) saveCalendarDateBasis(dateBasis)
+  }, [dateBasis, observedPeriod])
+
+  const availableDays = useMemo(() => calendar?.days.filter((day) => !day.unavailable) ?? [], [calendar])
+  const visibleMonthDays = availableDays.filter((day) => day.in_month)
 
   useEffect(() => {
-    if (!calendar?.days.length) return
-    if (selectedDate && calendar.days.some((day) => day.date === selectedDate)) return
-    const inCalendarToday = calendar.days.find((day) => day.date === today)
-    const firstInMonth = calendar.days.find((day) => day.in_month)
-    onSelectedDateChange((inCalendarToday ?? firstInMonth ?? calendar.days[0]).date)
-  }, [calendar, onSelectedDateChange, selectedDate, today])
+    if (!availableDays.length) return
+    if (selectedDate && availableDays.some((day) => day.date === selectedDate)) return
+    const inCalendarToday = availableDays.find((day) => day.date === today)
+    const firstInMonth = availableDays.find((day) => day.in_month)
+    onSelectedDateChange((inCalendarToday ?? firstInMonth ?? availableDays[0]).date)
+  }, [availableDays, onSelectedDateChange, selectedDate, today])
 
-  const selectedDay = calendar?.days.find((day) => day.date === selectedDate)
+  const selectedDay = availableDays.find((day) => day.date === selectedDate)
   const weekDays = useMemo(() => weekdayShortLabels(dateLocale), [dateLocale])
 
   if (isLoading) {
@@ -156,9 +162,9 @@ export function TransactionCalendarView({
     <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-start">
       <section className="min-w-0 flex-1 bg-card rounded-xl border border-border shadow-sm overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border sm:px-5">
-          <CalendarLegend />
+          <CalendarLegend observedPeriod={observedPeriod} />
           <div className="flex flex-wrap items-center gap-2">
-            <CalendarDateBasisToggle value={dateBasis} onChange={onDateBasisChange} />
+            {!observedPeriod && <CalendarDateBasisToggle value={dateBasis} onChange={onDateBasisChange} />}
             <CalendarMetricToggle value={metric} onChange={setMetric} />
             <CalendarDensityToggle value={density} onChange={setDensity} />
           </div>
@@ -166,7 +172,7 @@ export function TransactionCalendarView({
 
         {metric === 'balance' ? (
           <BalanceTrend
-            days={calendar.days.filter((day) => day.in_month)}
+            days={visibleMonthDays}
             currency={calendar.currency}
             locale={locale}
             mask={mask}
@@ -175,7 +181,7 @@ export function TransactionCalendarView({
           />
         ) : (
           <ActivityBars
-            days={calendar.days.filter((day) => day.in_month)}
+            days={visibleMonthDays}
             currency={calendar.currency}
             locale={locale}
             mask={mask}
@@ -193,7 +199,11 @@ export function TransactionCalendarView({
         </div>
 
         <div className="hidden md:grid grid-cols-7">
-          {calendar.days.map((day, index) => (
+          {calendar.days.map((day, index) => day.unavailable ? (
+            <div key={day.date} aria-disabled="true" className="min-h-24 border-b border-r border-border bg-muted/25 p-2 text-xs text-muted-foreground">
+              {displayDayNumber(day.date)}
+            </div>
+          ) : (
             <DayCell
               key={day.date}
               day={day}
@@ -218,6 +228,11 @@ export function TransactionCalendarView({
 
         <div className="md:hidden divide-y divide-border">
           {calendar.days.filter((day) => day.in_month || day.date === selectedDate).map((day) => {
+            if (day.unavailable) return (
+              <div key={day.date} aria-disabled="true" className="px-4 py-2 text-xs text-muted-foreground">
+                {formatDate(day.date, dateLocale)}
+              </div>
+            )
             const selected = day.date === selectedDate
             const panelId = `transaction-calendar-day-details-${day.date}`
             return (
@@ -593,19 +608,28 @@ function ActivityBars({
   )
 }
 
-function CalendarLegend() {
+function CalendarLegend({ observedPeriod }: { observedPeriod: boolean }) {
   const { t } = useTranslation()
   return (
     <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
       <span className="font-semibold uppercase tracking-wide">{t('transactions.calendarLegend')}</span>
       <LegendItem tone="income" label={t('transactions.summaryIncome')} />
       <LegendItem tone="expense" label={t('transactions.summaryExpenses')} />
-      <LegendItem tone="transfer" label={t('transactions.transfer')}>
-        <ArrowLeftRight size={9} />
-      </LegendItem>
-      <LegendItem tone="projected" label={t('transactions.calendarProjected')}>
-        <CalendarDays size={9} />
-      </LegendItem>
+      {observedPeriod ? (
+        <span className="inline-flex items-center gap-1">
+          <Clock size={11} className="text-amber-600" />
+          {t('transactions.pending')}
+        </span>
+      ) : (
+        <>
+          <LegendItem tone="transfer" label={t('transactions.transfer')}>
+            <ArrowLeftRight size={9} />
+          </LegendItem>
+          <LegendItem tone="projected" label={t('transactions.calendarProjected')}>
+            <CalendarDays size={9} />
+          </LegendItem>
+        </>
+      )}
     </div>
   )
 }
@@ -1298,7 +1322,7 @@ function CalendarItemRow({
               aria-label={t('transactions.excludedFromReports')}
             />
           )}
-          {shouldShowPendingBadge(item) && (
+          {(shouldShowPendingBadge(item) || (item.kind === 'actual' && item.status === 'pending')) && (
             <span
               title={t('transactions.pending')}
               className="shrink-0 inline-flex items-center justify-center rounded-full border border-amber-200 bg-amber-50 p-0.5 dark:border-amber-500/30 dark:bg-amber-500/10"

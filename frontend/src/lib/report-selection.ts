@@ -3,12 +3,14 @@ import { addDaysIso, addMonthsIso, type PeriodWindow } from '@/lib/report-period
 export type ReportStatus = 'posted' | 'pending'
 export type ReportGroup = 'income' | 'expenses' | 'investments'
 
+export type ReportLedgerGroup = ReportGroup | 'activity'
+
 export const REPORT_STATUSES: ReportStatus[] = ['posted', 'pending']
 
 export interface ReportSelection {
   source: PeriodWindow
   range: PeriodWindow
-  group: ReportGroup
+  group: ReportLedgerGroup
   category?: string
   label: string
   projected: number
@@ -55,9 +57,9 @@ export function reportTransactionsUrl(selection: ReportSelection): string {
   const params = new URLSearchParams({
     report_group: selection.group, report_from: selection.source.from, report_to: selection.source.to,
     from: selection.range.from, to: selection.range.to,
-    type: selection.group === 'income' ? 'credit' : 'debit',
     hide_ignored: 'true',
   })
+  if (selection.group !== 'activity') params.set('type', selection.group === 'income' ? 'credit' : 'debit')
   if (selection.statuses.length === 1) params.set('status', selection.statuses[0])
   if (selection.accountIds?.length) params.set('account_id', selection.accountIds.join(','))
   if (selection.category === 'uncategorized') params.set('uncategorized', '1')
@@ -81,8 +83,13 @@ export function reportChartAction(label: string, activate: () => void) {
   }
 }
 
-export function readReportContext(params: URLSearchParams) {
-  const group = reportGroup(params.get('report_group') ?? '')
+export function readReportContext(params: URLSearchParams): {
+  report_group: ReportLedgerGroup
+  report_from: string
+  report_to: string
+} | null {
+  const value = params.get('report_group') ?? ''
+  const group = value === 'activity' ? value : reportGroup(value)
   const from = params.get('report_from') ?? ''
   const to = params.get('report_to') ?? ''
   if (!group || !isIsoDay(from) || !isIsoDay(to) || from > to) return null
