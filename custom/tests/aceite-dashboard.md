@@ -13,7 +13,7 @@ Base funcional [06 — Filtros do dashboard](../features/06-filtros-do-dashboard
 | DASH-07 | Reabrir a visão mensal e acionar navegação mensal e comparações de saldo. Alternar widgets no layout. | O modo mensal mantém navegação, projeções e layout configurável. Previsões adicionais não repetem pendências observadas. | Regressões do painel e teste de API |
 
 | DASH-08 | Aplicar 12/11–12/12, sair do painel e voltar. Acionar a seta anterior. | Retorna com as datas selecionadas e desloca para 12/10–12/11. | Teste da página |
-| DASH-09 | Selecionar uma conta e usar 30/03–03/04. Definir limites de 310 em março e 600 em abril. Registrar gasto de 40 na conta. | Limite proporcional de 80 e consumo de 50%. | Teste do widget de gastos |
+| DASH-09 | Selecionar uma conta e usar 30/03–03/04. Definir limites de 310 em março e 600 em abril. Registrar gasto de 40 na conta. | Limite integral de março de 310 e consumo de 13% para os 40 gastos no intervalo inteiro. | Teste do widget de gastos |
 
 ## Evidência visual
 

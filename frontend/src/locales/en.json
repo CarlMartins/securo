@@ -827,6 +827,7 @@
     "periodMissingFx": "Some transactions are excluded from the totals because their exchange rate is unavailable.",
     "periodSavingsCaption": "of income saved in this period",
     "periodResult": "Period result",
+    "budgetReferenceMonth": "Budget for {{month}}",
     "budgetMonthlyScope": "Budget pace is available in the monthly view with all accounts.",
     "title": "Dashboard",
     "greetingMorning": "Good morning",

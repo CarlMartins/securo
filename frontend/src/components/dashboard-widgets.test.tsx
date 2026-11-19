@@ -69,7 +69,7 @@ describe('SpendingPaceWidget', () => {
     expect(screen.getByText(t('widgets.spendingPace.left', { amount: usd(250) }))).toBeInTheDocument()
   })
 
-  it('compares filtered spending with prorated monthly limits across a month boundary', async () => {
+  it('compares filtered spending with the full budget of the start month', async () => {
     api.budgets.comparison.mockImplementation(async (month: string) => [
       { category_id: 'food', budget_amount: month === '2026-03-01' ? 310 : 600 },
     ])
@@ -77,8 +77,9 @@ describe('SpendingPaceWidget', () => {
       ...PAST, customPeriod: true, range: { from: '2026-03-30', to: '2026-04-03' },
       activeAccountIds: ['a'], activity: activity(0, 40),
     }} />)
-    expect(await screen.findByText('/ ' + usd(80))).toBeInTheDocument()
-    expect(screen.getByText(t('widgets.spendingPace.used', { percent: 50 }))).toBeInTheDocument()
+    expect(await screen.findByText('/ ' + usd(310))).toBeInTheDocument()
+    expect(api.budgets.comparison.mock.calls).toEqual([['2026-03-01']])
+    expect(screen.getByText(t('widgets.spendingPace.used', { percent: 13 }))).toBeInTheDocument()
   })
 
   it('says by how much the budget was passed', async () => {

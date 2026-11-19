@@ -829,6 +829,7 @@
     "periodMissingFx": "Algumas transações ficaram fora dos totais porque a taxa de câmbio está indisponível.",
     "periodSavingsCaption": "do rendimento do período foi poupado",
     "periodResult": "Resultado do período",
+    "budgetReferenceMonth": "Orçamento de {{month}}",
     "budgetMonthlyScope": "O ritmo do orçamento está disponível na vista mensal com todas as contas.",
     "title": "Painel",
     "greetingMorning": "Bom dia",

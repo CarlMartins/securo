@@ -474,7 +474,7 @@ export default function DashboardPage() {
     enabled: !customRange && !noAccounts && shows('transactions'),
   })
 
-  const { rows: budgetComparison } = useDashboardBudget(selectedMonth, customRange, !noAccounts && shows('spending-by-category'))
+  const { budgetMonth, rows: budgetComparison, loading: budgetLoading, error: budgetError } = useDashboardBudget(selectedMonth, customRange, !noAccounts && shows('spending-by-category'))
 
   const { data: categoriesList } = useQuery({
     queryKey: ['categories'],
@@ -1170,7 +1170,10 @@ export default function DashboardPage() {
     'spending-by-category': (
         <div className="bg-card rounded-xl border border-border shadow-sm flex flex-col max-h-[420px]">
           <div className="px-5 py-4 border-b border-border shrink-0 flex items-center justify-between">
-            <p className="text-sm font-semibold text-foreground">{t('dashboard.spendingByCategory')}</p>
+            <div>
+              <p className="text-sm font-semibold text-foreground">{t('dashboard.spendingByCategory')}</p>
+              {customRange && <p className="text-xs text-muted-foreground">{t('dashboard.budgetReferenceMonth', { month: monthLabel(budgetMonth, dateLocale) })}</p>}
+            </div>
             <button
               onClick={() => setCatSortDesc(v => !v)}
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
@@ -1180,13 +1183,13 @@ export default function DashboardPage() {
             </button>
           </div>
           <div className="p-3 overflow-y-auto flex-1">
-            {activityLoading ? (
+            {activityLoading || budgetLoading ? (
               <div className="space-y-3 p-2">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <Skeleton key={i} className="h-12 w-full" />
                 ))}
               </div>
-            ) : activityError ? (
+            ) : activityError || budgetError ? (
               <p className="py-12 text-center text-sm text-destructive" role="alert">{t('common.error')}</p>
             ) : mergedCategories.length > 0 ? (
               <div className="space-y-1.5">

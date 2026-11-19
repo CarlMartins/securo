@@ -10,7 +10,7 @@ import { accounts as accountsApi, dashboard, invoiceSchedules, invoices as invoi
 import { AGING_BUCKETS, displayNumber } from '@/lib/invoice-utils'
 import { sumAccountBalances, getAccountLabel } from '@/lib/account-utils'
 import { formatCurrency } from '@/lib/format'
-import { monthLastDay, shiftMonth } from '@/lib/month-utils'
+import { monthLabel, monthLastDay, shiftMonth } from '@/lib/month-utils'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAssistant } from '@/contexts/assistant-context'
@@ -105,8 +105,9 @@ export function SpendingPaceWidget({ scope }: { scope: DashboardScope }) {
   const { t } = useTranslation()
   const locale = useDisplayLocale()
   const { mask } = usePrivacyMode()
+  const dateLocale = useDateLocale()
   const { data: summary, isLoading, isError, refetch } = useSummary(scope)
-  const { rows: comparison, loading: budgetsLoading, error: budgetsError, refresh: refetchBudgets } =
+  const { budgetMonth, rows: comparison, loading: budgetsLoading, error: budgetsError, refresh: refetchBudgets } =
     useDashboardBudget(scope.month, scope.range ?? null, !scope.noAccounts)
   const filtered = Boolean(scope.customPeriod || scope.activeAccountIds !== null)
   const money = (value: number) => mask(formatCurrency(value, scope.activity?.currency ?? scope.currency, locale))
@@ -124,6 +125,7 @@ export function SpendingPaceWidget({ scope }: { scope: DashboardScope }) {
 
   return (
     <WidgetCard title={t(scope.customPeriod ? 'dashboard.periodExpenses' : 'widgets.spendingPace.title')} action={<CardLink to="/budgets" label={t('widgets.budgets')} />}>
+      {scope.customPeriod && <p className="mb-3 text-xs text-muted-foreground">{t('dashboard.budgetReferenceMonth', { month: monthLabel(budgetMonth, dateLocale) })}</p>}
       {(filtered ? scope.activityLoading : isLoading) || budgetsLoading ? (
         <Skeleton className="h-24 w-full" />
       ) : (filtered ? scope.activityError : isError) || budgetsError ? (

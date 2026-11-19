@@ -988,6 +988,25 @@ describe('custom dashboard period', () => {
     expect(screen.getByTestId('location-search')).not.toHaveTextContent('account_id=')
   })
 
+  it.each([
+    ['11-01', '12-01'],
+    ['11-15', '12-30'],
+    ['11-01', '11-15'],
+    ['11-30', '12-30'],
+  ])('uses November limits for %s through %s', async (from, to) => {
+    api.budgets.comparison.mockImplementation(async (month: string) => [
+      { category_id: 'food', budget_amount: month === '2026-11-01' ? 2500 : 4000 },
+    ])
+    api.dashboard.period.mockResolvedValue({
+      ...emptyActivity,
+      spending: [{ category_id: 'food', category_name: 'Food', category_icon: 'x', category_color: '#333', total: '1000', projected_total: '1000' }],
+    })
+    renderDashboard(`/?from=2026-${from}&to=2026-${to}&account_id=checking`)
+    expect(await screen.findByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
+    expect(api.budgets.comparison.mock.calls).toEqual([['2026-11-01']])
+    expect(screen.getByText(t('dashboard.budgetReferenceMonth', { month: monthLabel('2026-11', 'en-US') }))).toBeInTheDocument()
+  })
+
   it('restores the custom period and shifts both dates by one calendar month', async () => {
     localStorage.setItem('securo.dashboard.range.local', 'from=2026-11-12&to=2026-12-12')
     const { user } = renderDashboard('/')
