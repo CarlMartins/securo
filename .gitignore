@@ -18,3 +18,5 @@ docker-compose.override.yml
 # downloaded ONNX embedding models, transaction attachments). User data
 # — never commit.
 backend/data/
+# Capturas com dados financeiros pessoais, mesmo parcialmente mascarados
+referencias-locais/

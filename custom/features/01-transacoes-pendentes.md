@@ -13,6 +13,17 @@
 - Usar valores decimais na apuração, conversão, alocação e soma. Quantizar com precisão monetária e política documentada e determinística. Quando a divisão produz resíduos, a alocação precisa reconciliar com o total da contribuição para o mesmo escopo, com desempate estável. Agregado e detalhe precisam usar os mesmos valores. Usar valor convertido gravado ou taxa resolvida conforme as regras aplicáveis. Sem taxa entre moedas diferentes, não presumir paridade, somar o valor estrangeiro como se fosse da moeda principal ou contabilizar ausência de conversão como zero. A apresentação desse caso e a política de resíduos constam nas [decisões restantes](../tests/cenarios.md#decisões-restantes).
 - Presets sem datas explícitas conservam as estimativas quando a API recebe ambos os status ou o parâmetro é omitido. Status único explícito e períodos com datas explícitas suprimem estimativas. No padrão combinado, um registro observado ou seu equivalente de provedor já contabilizado não deve voltar nas projeções transacionais. Uma recorrência, operação futura ou previsão de fatura elegível continua podendo ser projetada pela regra nativa. Se houver vínculo verificável com uma contribuição já contabilizada, contabilizar apenas o saldo ainda projetável, quando aplicável. Datas, descrições ou valores parecidos são insuficientes para inferir identidade. O resumo e as barras distinguem observado de projetado. Composição e tendência por categoria podem incorporar estimativas, assim como a composição do Money Map.
 
+## Contrato de interface e regressão visual
+
+Esta funcionalidade deve cumprir o [Contrato de interface compartilhado](00-contrato-interface-customizada.md) e os [Cenários de aceite de UI](../tests/aceite-interface-e-navegacao.md). A **v0.16.6-custom** é a referência de experiência das personalizações; a **v0.19.0** é a base técnica. Não substituir deliberadamente o fluxo original por uma interface genérica apenas porque os dados do relatório estão corretos.
+
+### Componente visual de status
+
+- Status é uma dimensão do mesmo painel de filtros compartilhado com contas; não criar seletor independente ou controles espalhados pelo relatório.
+- O painel deve apresentar **Lançada** e **Pendente** como opções de checkbox, com estado aplicado separado do rascunho, ações **Limpar** e **Aplicar** e retorno visual inequívoco após confirmar.
+- O resumo de filtros deve comunicar quando há somente um status. Ao selecionar ambos, não contabilizar esta dimensão como restrição. Preservar o indicador de filtros ativos, a legibilidade no tema escuro, o foco por teclado e os estados de hover/disabled.
+- Abrir uma categoria após filtrar por status aplica o mesmo status ao modal e à navegação para a página nativa de Transações. O comportamento conjunto é descrito em [Detalhamento](02-detalhamento-receitas-despesas.md).
+
 ## Critérios de aceite
 
 | Entrada fictícia no período explícito | Receita | Despesa | Resultado |
@@ -27,4 +38,4 @@ Para a mesma amostra em BRL e sem rateio ou investimento, conferir resumo, barra
 
 Os casos do serviço cobrem agregações, identidade, elegibilidade, rateio recebido e projeção. A [matriz de regressão](../tests/cenarios.md) separa esses casos das dúvidas sobre moeda, rateios por categoria e classificação moderna. O [detalhamento](02-detalhamento-receitas-despesas.md) da migração deve reproduzir as contribuições exatas do agregado. A listagem geral histórica pode retornar um conjunto diferente. A navegação de períodos incluída no mesmo commit está descrita em [Períodos personalizados](04-periodos-personalizados.md).
 
-**Referências históricas.** `16a2e7e1`; extensão ao Money Map em `f01be4f8`; painel e URL final em `96bf07aa`. A branch atual mantém lançados como observados e tem estimativas nativas, sem o controle de status dos dois relatórios.
+**Referências históricas.** `16a2e7e1`; extensão ao Money Map em `f01be4f8`; painel e URL final em `96bf07aa`. Veja a [matriz da migração](../compatibilidade-v0.19.0.md) para a implementação na v0.19.0.
